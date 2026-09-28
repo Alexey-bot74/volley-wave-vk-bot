@@ -1,10 +1,26 @@
 import os
+import requests
 from flask import Flask, request
 
 app = Flask(__name__)
 
 CONFIRMATION_TOKEN = os.getenv("VK_CONFIRMATION_TOKEN")
 SECRET_KEY = os.getenv("VK_SECRET_KEY")
+VK_TOKEN = os.getenv("VK_TOKEN")
+
+def send_message(user_id, message):
+    url = "https://api.vk.com/method/messages.send"
+
+    params = {
+        "access_token": VK_TOKEN,
+        "v": "5.199",
+        "user_id": user_id,
+        "random_id": 0,
+        "message": message
+    }
+
+    response = requests.get(url, params=params)
+    print("VK RESPONSE:", response.text)
 
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -18,7 +34,19 @@ def callback():
     if data.get("type") == "confirmation":
         return CONFIRMATION_TOKEN or ""
 
-    # Пока просто подтверждаем получение события
+    # Новое сообщение
+    if data.get("type") == "message_new":
+        message = data.get("object", {})
+        user_id = message.get("from_id")
+
+        if user_id:
+            send_message(
+                user_id,
+                "Привет! 👋\n\nЭто бот школы пляжного волейбола VOLLEY WAVE 🏐"
+            )
+
+        return "ok"
+
     return "ok"
 
 @app.route("/", methods=["GET"])

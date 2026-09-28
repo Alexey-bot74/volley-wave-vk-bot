@@ -35,9 +35,9 @@ def callback():
         return CONFIRMATION_TOKEN or ""
 
     # Новое сообщение
-    if data.get("type") == "message_new":
-        message = data.get("object", {})
-        user_id = message.get("from_id")
+   if data.get("type") == "message_new":
+    message = data.get("object", {})
+    user_id = message.get("message", {}).get("from_id")
 
         if user_id:
             send_message(

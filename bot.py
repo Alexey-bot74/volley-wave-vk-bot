@@ -26,18 +26,15 @@ def send_message(user_id, message):
 def callback():
     data = request.json
 
-    # Проверка секретного ключа ВК
     if SECRET_KEY and data.get("secret") != SECRET_KEY:
         return "invalid secret", 403
 
-    # Подтверждение сервера ВК
     if data.get("type") == "confirmation":
         return CONFIRMATION_TOKEN or ""
 
-    # Новое сообщение
-   if data.get("type") == "message_new":
-    message = data.get("object", {})
-    user_id = message.get("message", {}).get("from_id")
+    if data.get("type") == "message_new":
+        message = data.get("object", {})
+        user_id = message.get("message", {}).get("from_id")
 
         if user_id:
             send_message(

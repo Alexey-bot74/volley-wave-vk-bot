@@ -8,7 +8,7 @@ CONFIRMATION_TOKEN = os.getenv("VK_CONFIRMATION_TOKEN")
 SECRET_KEY = os.getenv("VK_SECRET_KEY")
 VK_TOKEN = os.getenv("VK_TOKEN")
 
-def send_message(user_id, message):
+def send_message(user_id, message, keyboard=None):
     url = "https://api.vk.com/method/messages.send"
 
     params = {
@@ -19,8 +19,33 @@ def send_message(user_id, message):
         "message": message
     }
 
+    if keyboard:
+        params["keyboard"] = keyboard
+
     response = requests.get(url, params=params)
     print("VK RESPONSE:", response.text)
+
+def main_keyboard():
+    return """{
+        "one_time": false,
+        "buttons": [
+            [
+                {"action": {"type": "text", "label": "🏐 Записаться"}},
+                {"action": {"type": "text", "label": "📅 Расписание"}}
+            ],
+            [
+                {"action": {"type": "text", "label": "👤 Мои тренировки"}},
+                {"action": {"type": "text", "label": "💰 Цены"}}
+            ],
+            [
+                {"action": {"type": "text", "label": "👶 Детские группы"}},
+                {"action": {"type": "text", "label": "📍 Где тренируемся"}}
+            ],
+            [
+                {"action": {"type": "text", "label": "❓ Задать вопрос"}}
+            ]
+        ]
+    }"""
 
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -39,7 +64,10 @@ def callback():
         if user_id:
             send_message(
                 user_id,
-                "Привет! 👋\n\nЭто бот школы пляжного волейбола VOLLEY WAVE 🏐"
+                "Привет! 👋\n\n"
+                "Добро пожаловать в VOLLEY WAVE 🏐\n"
+                "Выбери нужный раздел:",
+                main_keyboard()
             )
 
         return "ok"

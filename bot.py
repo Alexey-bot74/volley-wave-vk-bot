@@ -1,111 +1,6 @@
-import os
-import requests
-from flask import Flask, request
-
-app = Flask(__name__)
-
-CONFIRMATION_TOKEN = os.getenv("VK_CONFIRMATION_TOKEN")
-SECRET_KEY = os.getenv("VK_SECRET_KEY")
-VK_TOKEN = os.getenv("VK_TOKEN")
-
-def send_message(user_id, message, keyboard=None):
-    url = "https://api.vk.com/method/messages.send"
-
-    params = {
-        "access_token": VK_TOKEN,
-        "v": "5.199",
-        "user_id": user_id,
-        "random_id": 0,
-        "message": message
-    }
-
-    if keyboard:
-        params["keyboard"] = keyboard
-
-    response = requests.get(url, params=params)
-
-    print("VK RESPONSE:", response.text)
-
-def main_keyboard():
-    return """{
-        "one_time": false,
-        "buttons": [
-            [
-                {
-                    "action": {
-                        "type": "text",
-                        "label": "🏐 Записаться"
-                    }
-                },
-                {
-                    "action": {
-                        "type": "text",
-                        "label": "📅 Расписание"
-                    }
-                }
-            ],
-            [
-                {
-                    "action": {
-                        "type": "text",
-                        "label": "👤 Мои тренировки"
-                    }
-                },
-                {
-                    "action": {
-                        "type": "text",
-                        "label": "💰 Цены"
-                    }
-                }
-            ],
-            [
-                {
-                    "action": {
-                        "type": "text",
-                        "label": "👶 Детские группы"
-                    }
-                },
-                {
-                    "action": {
-                        "type": "text",
-                        "label": "📍 Где тренируемся"
-                    }
-                }
-            ],
-            [
-                {
-                    "action": {
-                        "type": "text",
-                        "label": "❓ Задать вопрос"
-                    }
-                }
-            ]
-        ]
-    }"""
-
-@app.route("/callback", methods=["POST"])
-def callback():
-    data = request.json
-
-    if SECRET_KEY and data.get("secret") != SECRET_KEY:
-        return "invalid secret", 403
-
-    if data.get("type") == "confirmation":
-        return CONFIRMATION_TOKEN or ""
-
-    if data.get("type") == "message_new":
-        message = data.get("object", {})
-        vk_message = message.get("message", {})
-
-        user_id = vk_message.get("from_id")
-        text = vk_message.get("text", "")
-
-        if user_id:
-            if text == "📅 Расписание":
-                send_message(
-                    user_id,
-                    "📅 Расписание\n\n"
-                    "Пока расписание добавляется в систему."
+user_id,
+                    "❓ Задать вопрос\n\n"
+                    "Напишите свой вопрос следующим сообщением."
                 )
 
             else:
@@ -113,7 +8,7 @@ def callback():
                     user_id,
                     "Привет! 👋\n\n"
                     "Добро пожаловать в VOLLEY WAVE 🏐\n"
-                    "Выбери нужный раздел:",
+                    "Выберите нужный раздел:",
                     main_keyboard()
                 )
 

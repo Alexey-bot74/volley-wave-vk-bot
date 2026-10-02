@@ -148,7 +148,7 @@ def callback():
                     "Здесь появится информация о площадках VOLLEY WAVE."
                 )
 
-            elif text == "❓ Задать вопрос"
+            elif text == "❓ Задать вопрос":
 
 
 send_message(

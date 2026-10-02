@@ -62,13 +62,22 @@ def callback():
         user_id = message.get("message", {}).get("from_id")
 
         if user_id:
-            send_message(
-                user_id,
-                "Привет! 👋\n\n"
-                "Добро пожаловать в VOLLEY WAVE 🏐\n"
-                "Выбери нужный раздел:",
-                main_keyboard()
-            )
+          text = message.get("message", {}).get("text", "")
+
+if text == "📅 Расписание":
+    send_message(
+        user_id,
+        "📅 Расписание\n\n"
+        "Пока расписание добавляется в систему."
+    )
+else:
+    send_message(
+        user_id,
+        "Привет! 👋\n\n"
+        "Добро пожаловать в VOLLEY WAVE 🏐\n"
+        "Выбери нужный раздел:",
+        main_keyboard()
+    )
 
         return "ok"
 

@@ -488,4 +488,4 @@ def get_setting(key, default=None):
     if result:
         return result["setting_value"]
 
-    return default l
+    return default

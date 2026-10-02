@@ -23,6 +23,7 @@ def send_message(user_id, message, keyboard=None):
         params["keyboard"] = keyboard
 
     response = requests.get(url, params=params)
+
     print("VK RESPONSE:", response.text)
 
 def main_keyboard():
@@ -30,19 +31,54 @@ def main_keyboard():
         "one_time": false,
         "buttons": [
             [
-                {"action": {"type": "text", "label": "🏐 Записаться"}},
-                {"action": {"type": "text", "label": "📅 Расписание"}}
+                {
+                    "action": {
+                        "type": "text",
+                        "label": "🏐 Записаться"
+                    }
+                },
+                {
+                    "action": {
+                        "type": "text",
+                        "label": "📅 Расписание"
+                    }
+                }
             ],
             [
-                {"action": {"type": "text", "label": "👤 Мои тренировки"}},
-                {"action": {"type": "text", "label": "💰 Цены"}}
+                {
+                    "action": {
+                        "type": "text",
+                        "label": "👤 Мои тренировки"
+                    }
+                },
+                {
+                    "action": {
+                        "type": "text",
+                        "label": "💰 Цены"
+                    }
+                }
             ],
             [
-                {"action": {"type": "text", "label": "👶 Детские группы"}},
-                {"action": {"type": "text", "label": "📍 Где тренируемся"}}
+                {
+                    "action": {
+                        "type": "text",
+                        "label": "👶 Детские группы"
+                    }
+                },
+                {
+                    "action": {
+                        "type": "text",
+                        "label": "📍 Где тренируемся"
+                    }
+                }
             ],
             [
-                {"action": {"type": "text", "label": "❓ Задать вопрос"}}
+                {
+                    "action": {
+                        "type": "text",
+                        "label": "❓ Задать вопрос"
+                    }
+                }
             ]
         ]
     }"""
@@ -59,25 +95,27 @@ def callback():
 
     if data.get("type") == "message_new":
         message = data.get("object", {})
-        user_id = message.get("message", {}).get("from_id")
+        vk_message = message.get("message", {})
+
+        user_id = vk_message.get("from_id")
+        text = vk_message.get("text", "")
 
         if user_id:
-          text = message.get("message", {}).get("text", "")
+            if text == "📅 Расписание":
+                send_message(
+                    user_id,
+                    "📅 Расписание\n\n"
+                    "Пока расписание добавляется в систему."
+                )
 
-if text == "📅 Расписание":
-    send_message(
-        user_id,
-        "📅 Расписание\n\n"
-        "Пока расписание добавляется в систему."
-    )
-else:
-    send_message(
-        user_id,
-        "Привет! 👋\n\n"
-        "Добро пожаловать в VOLLEY WAVE 🏐\n"
-        "Выбери нужный раздел:",
-        main_keyboard()
-    )
+            else:
+                send_message(
+                    user_id,
+                    "Привет! 👋\n\n"
+                    "Добро пожаловать в VOLLEY WAVE 🏐\n"
+                    "Выбери нужный раздел:",
+                    main_keyboard()
+                )
 
         return "ok"
 

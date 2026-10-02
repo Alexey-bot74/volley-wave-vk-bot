@@ -1,46 +1,111 @@
-import sqlite3
+trations
+        SET status = 'cancelled'
+        WHERE training_id = ?
+        AND user_id = ?
+        AND status = 'registered'
+    """, (training_id, user["id"]))
 
-DB_NAME = "volley_wave.db"
+    changed = cursor.rowcount > 0
 
-def get_connection():
-    connection = sqlite3.connect(DB_NAME)
-    connection.row_factory = sqlite3.Row
-    return connection
+    connection.commit()
+    connection.close()
 
-def init_db():
+    return changed
+
+def get_user_registrations(vk_id):
     connection = get_connection()
     cursor = connection.cursor()
 
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS trainings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date TEXT NOT NULL,
-            time TEXT NOT NULL,
-            title TEXT NOT NULL,
-            level TEXT,
-            capacity INTEGER DEFAULT 8,
-            price INTEGER DEFAULT 600
-        )
-    """)
+        SELECT
+            registrations.id AS registration_id,
+            registrations.status,
+            trainings.id AS training_id,
+            trainings.date,
+            trainings.time,
+            trainings.title,
+            trainings.level,
+            trainings.age_group,
+            trainings.location,
+            trainings.price
+        FROM registrations
+
+        JOIN users
+            ON users.id = registrations.user_id
+
+        JOIN trainings
+            ON trainings.id = registrations.training_id
+
+        WHERE users.vk_id = ?
+        AND registrations.status = 'registered'
+
+        ORDER BY trainings.date, trainings.time
+    """, (vk_id,))
+
+    registrations = cursor.fetchall()
+    connection.close()
+
+    return registrations
+
+def get_training_participants(training_id):
+    connection = get_connection()
+    cursor = connection.cursor()
 
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            vk_id INTEGER UNIQUE NOT NULL,
-            name TEXT,
-            phone TEXT
-        )
-    """)
+        SELECT
+            users.id,
+            users.vk_id,
+            users.name,
+            users.phone
+        FROM registrations
+
+        JOIN users
+            ON users.id = registrations.user_id
+
+        WHERE registrations.training_id = ?
+        AND registrations.status = 'registered'
+
+        ORDER BY registrations.created_at
+    """, (training_id,))
+
+    participants = cursor.fetchall()
+    connection.close()
+
+    return participants
+
+def set_setting(key, value):
+    connection = get_connection()
+    cursor = connection.cursor()
 
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS registrations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            training_id INTEGER NOT NULL,
-            user_id INTEGER NOT NULL,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(training_id, user_id)
+        INSERT INTO settings (
+            setting_key,
+            setting_value
         )
-    """)
+        VALUES (?, ?)
+
+        ON CONFLICT(setting_key)
+        DO UPDATE SET
+            setting_value = excluded.setting_value
+    """, (key, str(value)))
 
     connection.commit()
     connection.close()
+
+def get_setting(key, default=None):
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT setting_value
+        FROM settings
+        WHERE setting_key = ?
+    """, (key,))
+
+    result = cursor.fetchone()
+    connection.close()
+
+    if result:
+        return result["setting_value"]
+
+    return default l

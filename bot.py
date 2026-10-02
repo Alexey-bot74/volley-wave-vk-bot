@@ -1,12 +1,16 @@
 import os
 import requests
 from flask import Flask, request
+from database import init_db
 
 app = Flask(__name__)
 
 CONFIRMATION_TOKEN = os.getenv("VK_CONFIRMATION_TOKEN")
 SECRET_KEY = os.getenv("VK_SECRET_KEY")
 VK_TOKEN = os.getenv("VK_TOKEN")
+
+# Создаём базу данных при запуске
+init_db()
 
 def send_message(user_id, message, keyboard=None):
     url = "https://api.vk.com/method/messages.send"
@@ -23,6 +27,7 @@ def send_message(user_id, message, keyboard=None):
         params["keyboard"] = keyboard
 
     response = requests.get(url, params=params)
+
     print("VK RESPONSE:", response.text)
 
 def main_keyboard():
@@ -86,13 +91,17 @@ def main_keyboard():
 def callback():
     data = request.json
 
+    # Проверяем секрет VK
     if SECRET_KEY and data.get("secret") != SECRET_KEY:
         return "invalid secret", 403
 
+    # Подтверждение Callback API
     if data.get("type") == "confirmation":
         return CONFIRMATION_TOKEN or ""
 
+    # Новое сообщение
     if data.get("type") == "message_new":
+
         message = data.get("object", {})
         vk_message = message.get("message", {})
 
@@ -105,7 +114,7 @@ def callback():
                 send_message(
                     user_id,
                     "🏐 Запись на тренировку\n\n"
-                    "Скоро здесь можно будет выбрать подходящую тренировку."
+                    "Здесь можно будет выбрать подходящую тренировку."
                 )
 
             elif text == "📅 Расписание":
@@ -140,14 +149,14 @@ def callback():
                 send_message(
                     user_id,
                     "📍 Где тренируемся\n\n"
-                    "Здесь появится информация о площадках VOLLEY WAVE."
+
+
+Здесь появится информация о площадках VOLLEY WAVE."
                 )
 
             elif text == "❓ Задать вопрос":
                 send_message(
-
-
-user_id,
+                    user_id,
                     "❓ Задать вопрос\n\n"
                     "Напишите свой вопрос следующим сообщением."
                 )
@@ -171,4 +180,4 @@ def home():
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port)"

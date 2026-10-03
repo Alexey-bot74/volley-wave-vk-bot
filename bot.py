@@ -3335,7 +3335,7 @@ def callback():
 
             return "ok"
 
-        object_data = data.get(
+       object_data = data.get(
     "object",
     {},
 )

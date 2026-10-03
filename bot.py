@@ -3288,13 +3288,110 @@ def handle_message(
 )
 def callback():
 
-    data = request.get_json(
-        silent=True
-    )
+    try:
+        data = request.get_json(
+            silent=True
+        )
 
-    if not data:
+        logger.info(
+            "VK CALLBACK DATA: %s",
+            data,
+        )
+
+        if not data:
+            logger.warning(
+                "VK CALLBACK: пустой запрос"
+            )
+            return "ok"
+
+        event_type = data.get(
+            "type"
+        )
+
+        logger.info(
+            "VK EVENT TYPE: %s",
+            event_type,
+        )
+
+        # Подтверждение Callback API VK
+        if event_type == "confirmation":
+
+            logger.info(
+                "VK CALLBACK: confirmation"
+            )
+
+            return (
+                VK_CONFIRMATION_TOKEN
+                or ""
+            )
+
+        # Нас интересуют только новые сообщения
+        if event_type != "message_new":
+
+            logger.info(
+                "VK CALLBACK: событие пропущено: %s",
+                event_type,
+            )
+
+            return "ok"
+
+        object_data = data.get(
+            "object",
+            {},
+        )
+
+        logger.info(
+            "VK MESSAGE OBJECT: %s",
+            object_data,
+        )
+
+        user_id = object_data.get(
+            "from_id"
+        )
+
+        text = object_data.get(
+            "text",
+            "",
+        )
+
+        text = str(
+            text or ""
+        ).strip()
+
+        logger.info(
+            "VK MESSAGE: user_id=%s text=%r",
+            user_id,
+            text,
+        )
+
+        if not user_id:
+
+            logger.error(
+                "VK MESSAGE: отсутствует from_id"
+            )
+
+            return "ok"
+
+        handle_message(
+            int(user_id),
+            text,
+        )
+
+        logger.info(
+            "VK MESSAGE HANDLED: user_id=%s text=%r",
+            user_id,
+            text,
+        )
+
         return "ok"
 
+    except Exception:
+
+        logger.exception(
+            "КРИТИЧЕСКАЯ ОШИБКА CALLBACK"
+        )
+
+        return "ok"
     event_type = data.get(
         "type"
     )

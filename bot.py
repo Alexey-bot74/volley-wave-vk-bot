@@ -307,8 +307,8 @@ def main_menu(user_id):
         ],
         [
             button("❓ Задать вопрос", "secondary"),
+    ],
     ]
-
     if user_id in ADMIN_IDS:
         rows.append([
             button("⚙️ Админ-панель", "primary")

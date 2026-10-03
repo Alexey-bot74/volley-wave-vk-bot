@@ -2,606 +2,556 @@ import sqlite3
 
 DB_NAME = "volley_wave.db"
 
+DAYS = {
+    1: "Пн",
+    2: "Вт",
+    3: "Ср",
+    4: "Чт",
+    5: "Пт",
+    6: "Сб",
+    7: "Вс"
+}
+
+BASE_SCHEDULE = [
+    # Понедельник
+    (1, "09:00–11:00", "Дети 9–13 лет", None, "9–13 лет", 10, "600₽"),
+    (1, "17:00–19:00", "Дети 11–14 лет", None, "11–14 лет", 10, "600₽"),
+    (1, "19:00–20:30", "Техничка", "Общий уровень", None, 10, "1000–1200₽"),
+
+    # Вторник
+    (2, "09:00–11:00", "Взрослая группа", "Общий уровень", None, 8, "1000–1200₽"),
+    (2, "17:00–18:30", "Дети 11–14 лет", None, "11–14 лет", 10, "600₽"),
+    (2, "19:30–21:00", "Женская группа", "Средний и выше", None, 8, "1000–1200₽"),
+
+    # Среда
+    (3, "09:00–11:00", "Дети 9–14 лет", None, "9–14 лет", 10, "600₽"),
+    (3, "17:00–18:00", "Дети 5–9 лет", None, "5–9 лет", 10, "600₽"),
+    (3, "18:00–19:30", "Взрослая группа", "Продвинутый уровень", None, 8, "1000–1200₽"),
+    (3, "19:30–21:00", "Миксты", "Средний и выше", None, 3, "1200₽"),
+
+    # Четверг
+    (4, "09:00–11:00", "Взрослая группа", "Общий уровень", None, 8, "1000–1200₽"),
+    (4, "17:00–19:00", "Дети 11–14 лет", None, "11–14 лет", 10, "600₽"),
+    (4, "19:00–20:30", "Взрослая группа", "Средний уровень", None, 8, "1000–1200₽"),
+
+    # Пятница
+    (5, "09:00–11:00", "Дети 9–14 лет", None, "9–14 лет", 10, "600₽"),
+    (5, "17:00–18:00", "Дети 5–10 лет", None, "5–10 лет", 10, "600₽"),
+    (5, "17:00–19:00", "Дети 11–14 лет", None, "11–14 лет", 10, "600₽"),
+    (5, "19:00–20:30", "Техничка", "Общий уровень", None, 10, "1000–1200₽"),
+]
+
 
 def get_connection():
-    connection = sqlite3.connect(DB_NAME)
-    connection.row_factory = sqlite3.Row
-    return connection
+    connection = sqlite3.connect(DB_NAME)
+    connection.row_factory = sqlite3.Row
+    return connection
 
 
 def init_db():
-    connection = get_connection()
-    cursor = connection.cursor()
+    connection = get_connection()
+    cursor = connection.cursor()
 
-    # Пользователи
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            vk_id INTEGER UNIQUE NOT NULL,
-            name TEXT,
-            phone TEXT,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            vk_id INTEGER UNIQUE NOT NULL,
+            name TEXT,
+            phone TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
 
-    # Базовое недельное расписание
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS trainings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS trainings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            day_of_week INTEGER NOT NULL,
+            time TEXT NOT NULL,
+            title TEXT NOT NULL,
+            level TEXT,
+            age_group TEXT,
+            location TEXT,
+            capacity INTEGER NOT NULL DEFAULT 8,
+            price TEXT NOT NULL DEFAULT '600₽',
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
 
-            day_of_week INTEGER NOT NULL,
-            time TEXT NOT NULL,
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS registrations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            training_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'registered',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(training_id, user_id),
+            FOREIGN KEY(training_id) REFERENCES trainings(id),
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+    """)
 
-            title TEXT NOT NULL,
-            level TEXT,
-            age_group TEXT,
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            setting_key TEXT UNIQUE NOT NULL,
+            setting_value TEXT
+        )
+    """)
 
-            location TEXT,
+    connection.commit()
 
-            capacity INTEGER NOT NULL DEFAULT 8,
+    ensure_base_schedule(connection)
 
-            price TEXT NOT NULL DEFAULT '600₽',
-
-            active INTEGER NOT NULL DEFAULT 1,
-
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-
-    # Записи пользователей на тренировки
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS registrations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-            training_id INTEGER NOT NULL,
-            user_id INTEGER NOT NULL,
-
-            status TEXT NOT NULL DEFAULT 'registered',
-
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-
-            UNIQUE(training_id, user_id),
-
-            FOREIGN KEY(training_id)
-                REFERENCES trainings(id),
-
-            FOREIGN KEY(user_id)
-                REFERENCES users(id)
-        )
-    """)
-
-    # Настройки школы
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS settings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-            setting_key TEXT UNIQUE NOT NULL,
-            setting_value TEXT
-        )
-    """)
-
-    connection.commit()
-    connection.close()
+    connection.close()
 
 
-# =========================================================
-# ПОЛЬЗОВАТЕЛИ
-# =========================================================
+def ensure_base_schedule(connection):
+    """
+    Проверяет наличие базового расписания.
+    Если какого-то занятия нет — добавляет его.
+    Можно безопасно запускать при каждом старте бота.
+    """
+
+    cursor = connection.cursor()
+    added = 0
+
+    for item in BASE_SCHEDULE:
+        day_of_week, time, title, level, age_group, capacity, price = item
+
+        cursor.execute("""
+            SELECT id
+            FROM trainings
+            WHERE day_of_week = ?
+              AND time = ?
+              AND title = ?
+        """, (
+            day_of_week,
+            time,
+            title
+        ))
+
+        existing = cursor.fetchone()
+
+        if existing is None:
+            cursor.execute("""
+                INSERT INTO trainings (
+                    day_of_week,
+                    time,
+                    title,
+                    level,
+                    age_group,
+                    capacity,
+                    price,
+                    active
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+            """, (
+                day_of_week,
+                time,
+                title,
+                level,
+                age_group,
+                capacity,
+                price
+            ))
+
+            added += 1
+
+    connection.commit()
+
+    cursor.execute("SELECT COUNT(*) AS count FROM trainings")
+    total = cursor.fetchone()["count"]
+
+    print("===================================")
+    print("SCHEDULE CHECK")
+    print("ADDED:", added)
+    print("TOTAL TRAININGS:", total)
+    print("===================================")
+
+
+# =========================
+# USERS
+# =========================
 
 def get_user_by_vk_id(vk_id):
-    connection = get_connection()
-    cursor = connection.cursor()
+    connection = get_connection()
+    cursor = connection.cursor()
 
-    cursor.execute(
-        "SELECT * FROM users WHERE vk_id = ?",
-        (vk_id,)
-    )
+    cursor.execute("""
+        SELECT *
+        FROM users
+        WHERE vk_id = ?
+    """, (vk_id,))
 
-    user = cursor.fetchone()
+    user = cursor.fetchone()
+    connection.close()
 
-    connection.close()
-
-    return user
+    return user
 
 
 def create_user(vk_id, name=None, phone=None):
-    connection = get_connection()
-    cursor = connection.cursor()
+    connection = get_connection()
+    cursor = connection.cursor()
 
-    cursor.execute("""
-        INSERT OR IGNORE INTO users (
-            vk_id,
-            name,
-            phone
-        )
-        VALUES (?, ?, ?)
-    """, (
-        vk_id,
-        name,
-        phone
-    ))
+    cursor.execute("""
+        INSERT INTO users (
+            vk_id,
+            name,
+            phone
+        )
+        VALUES (?, ?, ?)
+    """, (
+        vk_id,
+        name,
+        phone
+    ))
 
-    connection.commit()
+    connection.commit()
 
-    cursor.execute(
-        "SELECT * FROM users WHERE vk_id = ?",
-        (vk_id,)
-    )
+    user_id = cursor.lastrowid
+    connection.close()
 
-    user = cursor.fetchone()
-
-    connection.close()
-
-    return user
+    return user_id
 
 
 def update_user(vk_id, name=None, phone=None):
-    connection = get_connection()
-    cursor = connection.cursor()
+    connection = get_connection()
+    cursor = connection.cursor()
 
-    cursor.execute("""
-        UPDATE users
-        SET
-            name = COALESCE(?, name),
-            phone = COALESCE(?, phone)
-        WHERE vk_id = ?
-    """, (
-        name,
-        phone,
-        vk_id
-    ))
+    cursor.execute("""
+        UPDATE users
+        SET
+            name = COALESCE(?, name),
+            phone = COALESCE(?, phone)
+        WHERE vk_id = ?
+    """, (
+        name,
+        phone,
+        vk_id
+    ))
 
-    connection.commit()
-    connection.close()
-
-
-# =========================================================
-# РАСПИСАНИЕ
-# =========================================================
-
-def get_trainings(active_only=True):
-    connection = get_connection()
-    cursor = connection.cursor()
-
-    if active_only:
-        cursor.execute("""
-            SELECT *
-            FROM trainings
-            WHERE active = 1
-            ORDER BY day_of_week, time
-        """)
-    else:
-        cursor.execute("""
-            SELECT *
-            FROM trainings
-            ORDER BY day_of_week, time
-        """)
-
-    trainings = cursor.fetchall()
-
-    connection.close()
-
-    return trainings
+    connection.commit()
+    connection.close()
 
 
-def get_trainings_by_day(day_of_week, active_only=True):
-    connection = get_connection()
-    cursor = connection.cursor()
+# =========================
+# TRAININGS
+# =========================
 
-    if active_only:
-        cursor.execute("""
-            SELECT *
-            FROM trainings
-            WHERE day_of_week = ?
-            AND active = 1
-            ORDER BY time
-        """, (day_of_week,))
-    else:
-        cursor.execute("""
-            SELECT *
-            FROM trainings
-            WHERE day_of_week = ?
-            ORDER BY time
-        """, (day_of_week,))
+def get_trainings():
+    connection = get_connection()
+    cursor = connection.cursor()
 
-    trainings = cursor.fetchall()
+    cursor.execute("""
+        SELECT *
+        FROM trainings
+        WHERE active = 1
+        ORDER BY day_of_week, time
+    """)
 
-    connection.close()
+    trainings = cursor.fetchall()
+    connection.close()
 
-    return trainings
+    return trainings
+
+
+def get_trainings_by_day(day_of_week):
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT *
+        FROM trainings
+        WHERE day_of_week = ?
+          AND active = 1
+        ORDER BY time
+    """, (day_of_week,))
+
+    trainings = cursor.fetchall()
+    connection.close()
+
+    return trainings
 
 
 def get_training(training_id):
-    connection = get_connection()
-    cursor = connection.cursor()
+    connection = get_connection()
+    cursor = connection.cursor()
 
-    cursor.execute(
-        "SELECT * FROM trainings WHERE id = ?",
-        (training_id,)
-    )
+    cursor.execute("""
+        SELECT *
+        FROM trainings
+        WHERE id = ?
+    """, (training_id,))
 
-    training = cursor.fetchone()
+    training = cursor.fetchone()
+    connection.close()
 
-    connection.close()
-
-    return training
+    return training
 
 
 def create_training(
-    day_of_week,
-    time,
-    title,
-    level=None,
-    age_group=None,
-    location=None,
-    capacity=8,
-    price="600₽"
+    day_of_week,
+    time,
+    title,
+    level=None,
+    age_group=None,
+    location=None,
+    capacity=8,
+    price="600₽"
 ):
-    connection = get_connection()
-    cursor = connection.cursor()
+    connection = get_connection()
+    cursor = connection.cursor()
 
-    cursor.execute("""
-        INSERT INTO trainings (
-            day_of_week,
-            time,
-            title,
-            level,
-            age_group,
-            location,
-            capacity,
-            price
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        day_of_week,
-        time,
-        title,
-        level,
-        age_group,
-        location,
-        capacity,
-        price
-    ))
+    cursor.execute("""
+        INSERT INTO trainings (
+            day_of_week,
+            time,
+            title,
+            level,
+            age_group,
+            location,
+            capacity,
+            price
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        day_of_week,
+        time,
+        title,
+        level,
+        age_group,
+        location,
+        capacity,
+        price
+    ))
 
-    connection.commit()
+    connection.commit()
 
-    training_id = cursor.lastrowid
+    training_id = cursor.lastrowid
+    connection.close()
 
-    connection.close()
-
-    return training_id
+    return training_id
 
 
-def update_training(
-    training_id,
-    day_of_week=None,
-    time=None,
-    title=None,
-    level=None,
-    age_group=None,
-    location=None,
-    capacity=None,
-    price=None,
-    active=None
-):
-    connection = get_connection()
-    cursor = connection.cursor()
+def update_training(training_id, **kwargs):
+    allowed_fields = {
+        "day_of_week",
+        "time",
+        "title",
+        "level",
+        "age_group",
+        "location",
+        "capacity",
+        "price",
+        "active"
+    }
 
-    cursor.execute(
-        "SELECT id FROM trainings WHERE id = ?",
-        (training_id,)
-    )
+    fields = []
+    values = []
 
-    training = cursor.fetchone()
+    for field, value in kwargs.items():
+        if field in allowed_fields:
+            fields.append(f"{field} = ?")
+            values.append(value)
 
-    if not training:
-        connection.close()
-        return False
+    if not fields:
+        return
 
-    cursor.execute("""
-        UPDATE trainings
-        SET
-            day_of_week = COALESCE(?, day_of_week),
-            time = COALESCE(?, time),
-            title = COALESCE(?, title),
-            level = COALESCE(?, level),
-            age_group = COALESCE(?, age_group),
-            location = COALESCE(?, location),
-            capacity = COALESCE(?, capacity),
-            price = COALESCE(?, price),
-            active = COALESCE(?, active)
-        WHERE id = ?
-    """, (
-        day_of_week,
-        time,
-        title,
-        level,
-        age_group,
-        location,
-        capacity,
-        price,
-        active,
-        training_id
-    ))
+    values.append(training_id)
 
-    connection.commit()
-    connection.close()
+    connection = get_connection()
+    cursor = connection.cursor()
 
-    return True
+    cursor.execute(
+        f"""
+        UPDATE trainings
+        SET {", ".join(fields)}
+        WHERE id = ?
+        """,
+        values
+    )
+
+    connection.commit()
+    connection.close()
 
 
 def deactivate_training(training_id):
-    connection = get_connection()
-    cursor = connection.cursor()
-
-    cursor.execute("""
-        UPDATE trainings
-        SET active = 0
-        WHERE id = ?
-    """, (training_id,))
-
-    connection.commit()
-    connection.close()
+    update_training(training_id, active=0)
 
 
-# =========================================================
-# ЗАПИСИ НА ТРЕНИРОВКИ
-# =========================================================
+# =========================
+# REGISTRATIONS
+# =========================
 
 def get_registration_count(training_id):
-    connection = get_connection()
-    cursor = connection.cursor()
+    connection = get_connection()
+    cursor = connection.cursor()
 
-    cursor.execute("""
-        SELECT COUNT(*) AS count
-        FROM registrations
-        WHERE training_id = ?
-        AND status = 'registered'
-    """, (training_id,))
+    cursor.execute("""
+        SELECT COUNT(*) AS count
+        FROM registrations
+        WHERE training_id = ?
+          AND status = 'registered'
+    """, (training_id,))
 
-    result = cursor.fetchone()
+    count = cursor.fetchone()["count"]
+    connection.close()
 
-    connection.close()
-
-    return result["count"]
+    return count
 
 
 def get_available_spots(training_id):
-    training = get_training(training_id)
+    training = get_training(training_id)
 
-    if not training:
-        return 0
+    if not training:
+        return 0
 
-    registered = get_registration_count(training_id)
+    registered = get_registration_count(training_id)
 
-    return max(
-        training["capacity"] - registered,
-        0
-    )
+    return max(training["capacity"] - registered, 0)
 
 
-def register_user(training_id, vk_id):
-    connection = get_connection()
-    cursor = connection.cursor()
+def register_user(training_id, user_id):
+    connection = get_connection()
+    cursor = connection.cursor()
 
-    cursor.execute(
-        "SELECT id FROM users WHERE vk_id = ?",
-        (vk_id,)
-    )
+    try:
+        cursor.execute("""
+            INSERT INTO registrations (
+                training_id,
+                user_id,
+                status
+            )
+            VALUES (?, ?, 'registered')
+        """, (
+            training_id,
+            user_id
+        ))
 
-    user = cursor.fetchone()
+        connection.commit()
 
-    if not user:
-        connection.close()
-        return False, "user_not_found"
+        registration_id = cursor.lastrowid
+        connection.close()
 
-    cursor.execute("""
-        SELECT id
-        FROM registrations
-        WHERE training_id = ?
-        AND user_id = ?
-        AND status = 'registered'
-    """, (
-        training_id,
-        user["id"]
-    ))
+        return registration_id
 
-    existing = cursor.fetchone()
-
-    if existing:
-        connection.close()
-        return False, "already_registered"
-
-    cursor.execute("""
-        SELECT capacity
-        FROM trainings
-        WHERE id = ?
-        AND active = 1
-    """, (training_id,))
-
-    training = cursor.fetchone()
-
-    if not training:
-        connection.close()
-        return False, "training_not_found"
-
-    cursor.execute("""
-        SELECT COUNT(*) AS count
-        FROM registrations
-        WHERE training_id = ?
-        AND status = 'registered'
-    """, (training_id,))
-
-    registered = cursor.fetchone()["count"]
-
-    if registered >= training["capacity"]:
-        connection.close()
-        return False, "no_spots"
-
-    cursor.execute("""
-        INSERT INTO registrations (
-            training_id,
-            user_id,
-            status
-        )
-        VALUES (?, ?, 'registered')
-    """, (
-        training_id,
-        user["id"]
-    ))
-
-    connection.commit()
-    connection.close()
-
-    return True, "registered"
+    except sqlite3.IntegrityError:
+        connection.close()
+        return None
 
 
-def cancel_registration(training_id, vk_id):
-    connection = get_connection()
-    cursor = connection.cursor()
+def cancel_registration(training_id, user_id):
+    connection = get_connection()
+    cursor = connection.cursor()
 
-    cursor.execute(
-        "SELECT id FROM users WHERE vk_id = ?",
-        (vk_id,)
-    )
+    cursor.execute("""
+        UPDATE registrations
+        SET status = 'cancelled'
+        WHERE training_id = ?
+          AND user_id = ?
+          AND status = 'registered'
+    """, (
+        training_id,
+        user_id
+    ))
 
-    user = cursor.fetchone()
-
-    if not user:
-        connection.close()
-        return False
-
-    cursor.execute("""
-        UPDATE registrations
-        SET status = 'cancelled'
-        WHERE training_id = ?
-        AND user_id = ?
-        AND status = 'registered'
-    """, (
-        training_id,
-        user["id"]
-    ))
-
-    changed = cursor.rowcount > 0
-
-    connection.commit()
-    connection.close()
-
-    return changed
+    connection.commit()
+    connection.close()
 
 
-def get_user_registrations(vk_id):
-    connection = get_connection()
-    cursor = connection.cursor()
+def get_user_registrations(user_id):
+    connection = get_connection()
+    cursor = connection.cursor()
 
-    cursor.execute("""
-        SELECT
-            registrations.id AS registration_id,
-            registrations.status,
+    cursor.execute("""
+        SELECT
+            registrations.*,
+            trainings.day_of_week,
+            trainings.time,
+            trainings.title,
+            trainings.level,
+            trainings.age_group,
+            trainings.location,
+            trainings.price
+        FROM registrations
+        JOIN trainings
+            ON trainings.id = registrations.training_id
+        WHERE registrations.user_id = ?
+          AND registrations.status = 'registered'
+        ORDER BY trainings.day_of_week, trainings.time
+    """, (user_id,))
 
-            trainings.id AS training_id,
-            trainings.day_of_week,
-            trainings.time,
-            trainings.title,
-            trainings.level,
-            trainings.age_group,
-            trainings.location,
-            trainings.price
+    registrations = cursor.fetchall()
+    connection.close()
 
-        FROM registrations
-
-        JOIN users
-            ON users.id = registrations.user_id
-
-        JOIN trainings
-            ON trainings.id = registrations.training_id
-
-        WHERE users.vk_id = ?
-        AND registrations.status = 'registered'
-
-        ORDER BY
-            trainings.day_of_week,
-            trainings.time
-    """, (vk_id,))
-
-    registrations = cursor.fetchall()
-
-    connection.close()
-
-    return registrations
+    return registrations
 
 
 def get_training_participants(training_id):
-    connection = get_connection()
-    cursor = connection.cursor()
+    connection = get_connection()
+    cursor = connection.cursor()
 
-    cursor.execute("""
-        SELECT
-            users.id,
-            users.vk_id,
-            users.name,
-            users.phone
+    cursor.execute("""
+        SELECT
+            users.id,
+            users.vk_id,
+            users.name,
+            users.phone,
+            registrations.created_at
+        FROM registrations
+        JOIN users
+            ON users.id = registrations.user_id
+        WHERE registrations.training_id = ?
+          AND registrations.status = 'registered'
+        ORDER BY registrations.created_at
+    """, (training_id,))
 
-        FROM registrations
+    participants = cursor.fetchall()
+    connection.close()
 
-        JOIN users
-            ON users.id = registrations.user_id
-
-        WHERE registrations.training_id = ?
-        AND registrations.status = 'registered'
-
-        ORDER BY registrations.created_at
-    """, (training_id,))
-
-    participants = cursor.fetchall()
-
-    connection.close()
-
-    return participants
+    return participants
 
 
-# =========================================================
-# НАСТРОЙКИ
-# =========================================================
+# =========================
+# SETTINGS
+# =========================
 
 def set_setting(key, value):
-    connection = get_connection()
-    cursor = connection.cursor()
+    connection = get_connection()
+    cursor = connection.cursor()
 
-    cursor.execute("""
-        INSERT INTO settings (
-            setting_key,
-            setting_value
-        )
-        VALUES (?, ?)
+    cursor.execute("""
+        INSERT INTO settings (
+            setting_key,
+            setting_value
+        )
+        VALUES (?, ?)
+        ON CONFLICT(setting_key)
+        DO UPDATE SET setting_value = excluded.setting_value
+    """, (
+        key,
+        value
+    ))
 
-        ON CONFLICT(setting_key)
-        DO UPDATE SET
-            setting_value = excluded.setting_value
-    """, (
-        key,
-        str(value)
-    ))
-
-    connection.commit()
-    connection.close()
+    connection.commit()
+    connection.close()
 
 
 def get_setting(key, default=None):
-    connection = get_connection()
-    cursor = connection.cursor()
+    connection = get_connection()
+    cursor = connection.cursor()
 
-    cursor.execute("""
-        SELECT setting_value
-        FROM settings
-        WHERE setting_key = ?
-    """, (key,))
+    cursor.execute("""
+        SELECT setting_value
+        FROM settings
+        WHERE setting_key = ?
+    """, (key,))
 
-    result = cursor.fetchone()
+    row = cursor.fetchone()
+    connection.close()
 
-    connection.close()
+    if row is None:
+        return default
 
-    if result:
-        return result["setting_value"]
-
-    return default
+    return row["setting_value"]

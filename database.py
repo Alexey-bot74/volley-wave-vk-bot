@@ -36,7 +36,7 @@ def init_db():
             UNIQUE(training_id, user_id)
         )
     """)
-count = connection.execute(
+        count = connection.execute(
         "SELECT COUNT(*) FROM trainings"
     ).fetchone()[0]
 

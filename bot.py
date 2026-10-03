@@ -1,32 +1,11 @@
 import os
 import json
+import sqlite3
 import logging
 from datetime import datetime, date, timedelta
-from zoneinfo import ZoneInfo
 
 import requests
 from flask import Flask, request
-
-from database import (
-    init_db,
-    create_or_update_user,
-    get_user,
-    is_user_blocked,
-    get_training,
-    get_upcoming_trainings,
-    get_trainings_by_date,
-    get_registration,
-    get_registration_count,
-    get_registrations,
-    add_registration,
-    cancel_registration,
-    get_user_registrations,
-    get_waitlist_entry,
-    add_to_waitlist,
-    get_training_attendance,
-    add_admin_log,
-    get_connection,
-)
 
 
 # ============================================================
@@ -38,17 +17,19 @@ VK_SECRET_KEY = os.getenv("VK_SECRET_KEY")
 VK_CONFIRMATION_TOKEN = os.getenv("VK_CONFIRMATION_TOKEN")
 
 VK_API_VERSION = "5.199"
-PORT = int(os.getenv("PORT", "10000"))
-
-TIMEZONE = ZoneInfo("Asia/Yekaterinburg")
-
 GROUP_ID = 221776135
 
 ADMINS = {
     87984447,
-    172892670,
     148372158,
+    172892670,
 }
+
+DB_PATH = "volley_wave.db"
+
+PARTICIPANTS_PAGE_SIZE = 8
+SCHEDULE_DAYS = 14
+GENERATION_WEEKS = 6
 
 
 # ============================================================
@@ -57,10 +38,10 @@ ADMINS = {
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
+    format="%(asctime)s | %(levelname)s | %(message)s"
 )
 
-logger = logging.getLogger("volley_wave_bot")
+logger = logging.getLogger(__name__)
 
 
 # ============================================================
@@ -71,43 +52,474 @@ app = Flask(__name__)
 
 
 # ============================================================
-# STATES
+# WEEKDAYS
 # ============================================================
 
-user_states = {}
+WEEKDAYS = {
+    0: "Понедельник",
+    1: "Вторник",
+    2: "Среда",
+    3: "Четверг",
+    4: "Пятница",
+    5: "Суббота",
+    6: "Воскресенье",
+}
+
+WEEKDAYS_SHORT = {
+    0: "Пн",
+    1: "Вт",
+    2: "Ср",
+    3: "Чт",
+    4: "Пт",
+    5: "Сб",
+    6: "Вс",
+}
+
+
+# ============================================================
+# USER STATES
+# ============================================================
+
+USER_STATES = {}
 
 
 def set_state(user_id, state, data=None):
-    user_states[user_id] = {
+    USER_STATES[user_id] = {
         "state": state,
-        "data": data or {},
+        "data": data or {}
     }
 
 
 def get_state(user_id):
-    return user_states.get(
+    return USER_STATES.get(
         user_id,
         {
             "state": None,
-            "data": {},
-        },
+            "data": {}
+        }
     )
 
 
 def clear_state(user_id):
-    user_states.pop(user_id, None)
+    USER_STATES.pop(user_id, None)
+
+
+# ============================================================
+# DATABASE
+# ============================================================
+
+def get_connection():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db():
+    conn = get_connection()
+
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                vk_id INTEGER UNIQUE NOT NULL,
+                first_name TEXT,
+                last_name TEXT,
+                phone TEXT,
+                is_blocked INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS training_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                weekday INTEGER NOT NULL,
+                start_time TEXT NOT NULL,
+                end_time TEXT NOT NULL,
+                title TEXT NOT NULL,
+                category TEXT NOT NULL,
+                age_group TEXT,
+                level TEXT,
+                format TEXT,
+                coach TEXT,
+                capacity INTEGER DEFAULT 10,
+                price INTEGER DEFAULT 0,
+                location TEXT,
+                active INTEGER DEFAULT 1,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS trainings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                training_number INTEGER UNIQUE,
+                training_date TEXT NOT NULL,
+                weekday TEXT NOT NULL,
+                start_time TEXT NOT NULL,
+                end_time TEXT NOT NULL,
+                title TEXT NOT NULL,
+                category TEXT NOT NULL,
+                age_group TEXT,
+                level TEXT,
+                format TEXT,
+                coach TEXT,
+                capacity INTEGER DEFAULT 10,
+                price INTEGER DEFAULT 0,
+                location TEXT,
+                status TEXT DEFAULT 'active',
+                template_id INTEGER,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS registrations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                training_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                status TEXT DEFAULT 'active',
+                registered_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                cancelled_at TEXT,
+                cancellation_reason TEXT,
+                UNIQUE(training_id, user_id)
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS waitlist (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                training_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                position INTEGER,
+                status TEXT DEFAULT 'waiting',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(training_id, user_id)
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS attendance (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                registration_id INTEGER NOT NULL,
+                status TEXT,
+                marked_by INTEGER,
+                marked_at TEXT,
+                comment TEXT
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS payments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                training_id INTEGER,
+                amount INTEGER,
+                status TEXT,
+                payment_method TEXT,
+                external_id TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS admin_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                admin_vk_id INTEGER NOT NULL,
+                action TEXT,
+                entity_type TEXT,
+                entity_id INTEGER,
+                details TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                training_id INTEGER,
+                notification_type TEXT,
+                scheduled_for TEXT,
+                sent_at TEXT,
+                status TEXT
+            )
+        """)
+
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_trainings_date
+            ON trainings(training_date)
+        """)
+
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_registrations_training
+            ON registrations(training_id)
+        """)
+
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_registrations_user
+            ON registrations(user_id)
+        """)
+
+        conn.commit()
+
+    finally:
+        conn.close()
+
+    logger.info("Database initialized")
+
+
+# ============================================================
+# DEFAULT TRAINING TEMPLATES
+# ============================================================
+
+DEFAULT_TEMPLATES = [
+    # MONDAY
+    {
+        "weekday": 0,
+        "start_time": "09:00",
+        "end_time": "11:00",
+        "title": "Детская тренировка",
+        "category": "children",
+        "age_group": "9–13 лет",
+        "level": "Начальный / средний",
+        "format": "Группа",
+        "coach": "Алексей",
+        "capacity": 10,
+        "price": 600,
+    },
+    {
+        "weekday": 0,
+        "start_time": "17:00",
+        "end_time": "19:00",
+        "title": "Детская тренировка",
+        "category": "children",
+        "age_group": "11–14 лет",
+        "level": "Средний",
+        "format": "Группа",
+        "coach": "Алексей",
+        "capacity": 10,
+        "price": 600,
+    },
+    {
+        "weekday": 0,
+        "start_time": "19:00",
+        "end_time": "20:30",
+        "title": "Техническая тренировка",
+        "category": "adults",
+        "age_group": "18+",
+        "level": "Любой",
+        "format": "Группа",
+        "coach": "Алексей",
+        "capacity": 10,
+        "price": 1200,
+    },
+
+    # TUESDAY
+    {
+        "weekday": 1,
+        "start_time": "09:00",
+        "end_time": "11:00",
+        "title": "Взрослая тренировка",
+        "category": "adults",
+        "age_group": "18+",
+        "level": "Общий",
+        "format": "Группа",
+        "coach": "Алексей",
+        "capacity": 8,
+        "price": 1200,
+    },
+    {
+        "weekday": 1,
+        "start_time": "17:00",
+        "end_time": "18:30",
+        "title": "Детская тренировка",
+        "category": "children",
+        "age_group": "11–14 лет",
+        "level": "Средний",
+        "format": "Группа",
+        "coach": "Алексей",
+        "capacity": 10,
+        "price": 600,
+    },
+    {
+        "weekday": 1,
+        "start_time": "19:30",
+        "end_time": "21:00",
+        "title": "Женская тренировка",
+        "category": "adults",
+        "age_group": "18+",
+        "level": "Средний+",
+        "format": "Женская группа",
+        "coach": "Алексей",
+        "capacity": 8,
+        "price": 1200,
+    },
+
+    # WEDNESDAY
+    {
+        "weekday": 2,
+        "start_time": "09:00",
+        "end_time": "11:00",
+        "title": "Детская тренировка",
+        "category": "children",
+        "age_group": "9–14 лет",
+        "level": "Начальный / средний",
+        "format": "Группа",
+        "coach": "Алексей",
+        "capacity": 10,
+        "price": 600,
+    },
+    {
+        "weekday": 2,
+        "start_time": "17:00",
+        "end_time": "18:00",
+        "title": "Детская тренировка 5–9 лет",
+        "category": "children",
+        "age_group": "5–9 лет",
+        "level": "Начальный",
+        "format": "Группа",
+        "coach": "Ксения",
+        "capacity": 10,
+        "price": 600,
+    },
+    {
+        "weekday": 2,
+        "start_time": "18:00",
+        "end_time": "19:30",
+        "title": "Взрослая тренировка",
+        "category": "adults",
+        "age_group": "18+",
+        "level": "Продвинутый",
+        "format": "Группа",
+        "coach": "Алексей",
+        "capacity": 8,
+        "price": 1200,
+    },
+    {
+        "weekday": 2,
+        "start_time": "19:30",
+        "end_time": "21:00",
+        "title": "MIXED",
+        "category": "adults",
+        "age_group": "18+",
+        "level": "Средний+",
+        "format": "MIXED",
+        "coach": "Алексей",
+        "capacity": 8,
+        "price": 1200,
+    },
+
+    # THURSDAY
+    {
+        "weekday": 3,
+        "start_time": "09:00",
+        "end_time": "11:00",
+        "title": "Взрослая тренировка",
+        "category": "adults",
+        "age_group": "18+",
+        "level": "Общий",
+        "format": "Группа",
+        "coach": "Алексей",
+        "capacity": 8,
+        "price": 1200,
+    },
+    {
+        "weekday": 3,
+        "start_time": "17:00",
+        "end_time": "19:00",
+        "title": "Детская тренировка",
+        "category": "children",
+        "age_group": "11–14 лет",
+        "level": "Средний",
+        "format": "Группа",
+        "coach": "Алексей",
+        "capacity": 10,
+        "price": 600,
+    },
+    {
+        "weekday": 3,
+        "start_time": "19:00",
+        "end_time": "20:30",
+        "title": "Взрослая тренировка",
+        "category": "adults",
+        "age_group": "18+",
+        "level": "Средний",
+        "format": "Группа",
+        "coach": "Алексей",
+        "capacity": 8,
+        "price": 1200,
+    },
+
+    # FRIDAY
+    {
+        "weekday": 4,
+        "start_time": "09:00",
+        "end_time": "11:00",
+        "title": "Детская тренировка",
+        "category": "children",
+        "age_group": "9–14 лет",
+        "level": "Начальный / средний",
+        "format": "Группа",
+        "coach": "Алексей",
+        "capacity": 10,
+        "price": 600,
+    },
+    {
+        "weekday": 4,
+        "start_time": "17:00",
+        "end_time": "18:00",
+        "title": "Детская тренировка 5–10 лет",
+        "category": "children",
+        "age_group": "5–10 лет",
+        "level": "Начальный",
+        "format": "Группа",
+        "coach": "Ксения",
+        "capacity": 10,
+        "price": 600,
+    },
+    {
+        "weekday": 4,
+        "start_time": "17:00",
+        "end_time": "19:00",
+        "title": "Детская тренировка",
+        "category": "children",
+        "age_group": "11–14 лет",
+        "level": "Средний",
+        "format": "Группа",
+        "coach": "Алексей",
+        "capacity": 10,
+        "price": 600,
+    },
+    {
+        "weekday": 4,
+        "start_time": "19:00",
+        "end_time": "20:30",
+        "title": "Техническая тренировка",
+        "category": "adults",
+        "age_group": "18+",
+        "level": "Любой",
+        "format": "Группа",
+        "coach": "Алексей",
+        "capacity": 10,
+        "price": 1200,
+    },
+]
 
 
 # ============================================================
 # VK API
 # ============================================================
 
-def vk_api(method, params):
+def vk_api(method, **params):
     if not VK_TOKEN:
-        logger.error("VK_TOKEN is not configured")
+        logger.error("VK_TOKEN is missing")
         return None
 
-    params = dict(params)
     params["access_token"] = VK_TOKEN
     params["v"] = VK_API_VERSION
 
@@ -115,24 +527,25 @@ def vk_api(method, params):
         response = requests.post(
             f"https://api.vk.com/method/{method}",
             data=params,
-            timeout=15,
+            timeout=15
         )
 
         result = response.json()
 
         if "error" in result:
             logger.error(
-                "VK API error in %s: %s",
+                "VK API error in %s:\n%s",
                 method,
-                result["error"],
+                result
             )
+            return None
 
-        return result
+        return result.get("response")
 
-    except Exception:
+    except Exception as exc:
         logger.exception(
             "VK API request failed: %s",
-            method,
+            exc
         )
         return None
 
@@ -147,50 +560,39 @@ def send_message(user_id, message, keyboard=None):
     if keyboard is not None:
         params["keyboard"] = json.dumps(
             keyboard,
-            ensure_ascii=False,
+            ensure_ascii=False
         )
 
-    result = vk_api("messages.send", params)
-
-    if result is None:
-        logger.error(
-            "MESSAGE SEND FAILED user=%s",
-            user_id,
-        )
-
-    return result
+    return vk_api("messages.send", **params)
 
 
 # ============================================================
-# KEYBOARDS
+# KEYBOARD
 # ============================================================
 
 def button(label, color="secondary"):
     return {
         "action": {
             "type": "text",
-            "label": label,
+            "label": label
         },
-        "color": color,
+        "color": color
     }
 
 
-def main_menu(user_id):
-    buttons = [
+def main_keyboard(user_id):
+    rows = [
         [
             button("🏐 Записаться", "primary"),
-            button("📅 Расписание", "secondary"),
+            button("📅 Расписание", "primary"),
         ],
         [
-            button("👤 Мои тренировки", "secondary"),
+            button("👤 Мои тренировки", "primary"),
             button("💰 Цены", "secondary"),
         ],
         [
             button("📍 Где тренируемся", "secondary"),
-            button(
-                "🎯 Индивидуальная тренировка",
-                "secondary",
-            ),
+            button("🎯 Индивидуальная тренировка", "secondary"),
         ],
         [
             button("❓ Задать вопрос", "secondary"),
@@ -198,2097 +600,226 @@ def main_menu(user_id):
     ]
 
     if user_id in ADMINS:
-        buttons.append(
-            [
-                button(
-                    "⚙️ Админ-панель",
-                    "positive",
-                ),
-            ]
-        )
+        rows.append([
+            button("⚙️ Админ-панель", "positive")
+        ])
 
     return {
         "one_time": False,
-        "buttons": buttons,
+        "buttons": rows
     }
 
 
-def back_keyboard(user_id):
+def admin_keyboard():
     return {
         "one_time": False,
         "buttons": [
             [
-                button("⬅️ Назад", "secondary"),
-                button(
-                    "🏠 Главное меню",
-                    "secondary",
-                ),
-            ]
-        ],
-    }
-
-
-def admin_menu():
-    return {
-        "one_time": False,
-        "buttons": [
-            [
-                button(
-                    "📅 Расписание",
-                    "secondary",
-                ),
-                button(
-                    "👥 Участники тренировок",
-                    "secondary",
-                ),
+                button("📅 Расписание", "primary"),
+                button("👥 Участники тренировок", "primary"),
             ],
             [
-                button(
-                    "➕ Добавить тренировку",
-                    "primary",
-                ),
-                button(
-                    "🧩 Шаблоны",
-                    "secondary",
-                ),
+                button("➕ Создать тренировку", "positive"),
             ],
             [
-                button(
-                    "👤 Режим пользователя",
-                    "secondary",
-                ),
+                button("🏠 Главное меню", "secondary"),
             ],
-            [
-                button(
-                    "🏠 Главное меню",
-                    "secondary",
-                ),
-            ],
-        ],
-    }
-
-
-def admin_back_keyboard():
-    return {
-        "one_time": False,
-        "buttons": [
-            [
-                button(
-                    "⬅️ Админ-панель",
-                    "secondary",
-                ),
-                button(
-                    "🏠 Главное меню",
-                    "secondary",
-                ),
-            ]
-        ],
+        ]
     }
 
 
 # ============================================================
-# DATE / TEXT HELPERS
+# USERS
 # ============================================================
 
-WEEKDAYS = [
-    "Понедельник",
-    "Вторник",
-    "Среда",
-    "Четверг",
-    "Пятница",
-    "Суббота",
-    "Воскресенье",
-]
-
-WEEKDAYS_SHORT = [
-    "Пн",
-    "Вт",
-    "Ср",
-    "Чт",
-    "Пт",
-    "Сб",
-    "Вс",
-]
-
-
-def today_local():
-    return datetime.now(TIMEZONE).date()
-
-
-def format_date(value):
-    if isinstance(value, str):
-        value = datetime.strptime(
-            value,
-            "%Y-%m-%d",
-        ).date()
-
-    return (
-        f"{WEEKDAYS[value.weekday()]}, "
-        f"{value.day} "
-        f"{month_name(value.month)} "
-        f"{value.year}"
+def save_user(user_id):
+    response = vk_api(
+        "users.get",
+        user_ids=user_id,
+        fields=""
     )
 
+    first_name = ""
+    last_name = ""
 
-def format_short_date(value):
-    if isinstance(value, str):
-        value = datetime.strptime(
-            value,
-            "%Y-%m-%d",
-        ).date()
+    if response:
+        first_name = response[0].get("first_name", "")
+        last_name = response[0].get("last_name", "")
 
-    return (
-        f"{WEEKDAYS_SHORT[value.weekday()]}, "
-        f"{value.strftime('%d.%m')}"
-    )
-
-
-def month_name(month):
-    months = [
-        "",
-        "января",
-        "февраля",
-        "марта",
-        "апреля",
-        "мая",
-        "июня",
-        "июля",
-        "августа",
-        "сентября",
-        "октября",
-        "ноября",
-        "декабря",
-    ]
-
-    return months[month]
-
-
-def row_value(row, key, default=None):
-    if row is None:
-        return default
+    conn = get_connection()
 
     try:
-        return row[key]
-    except Exception:
-        try:
-            return row.get(key, default)
-        except Exception:
-            return default
-
-
-def normalize_category(value):
-    if value is None:
-        return ""
-
-    value = str(value).strip().lower()
-
-    if value in (
-        "дети",
-        "ребенок",
-        "children",
-        "child",
-    ):
-        return "children"
-
-    if value in (
-        "взрослые",
-        "взрослый",
-        "adults",
-        "adult",
-    ):
-        return "adults"
-
-    return value
-
-
-# ============================================================
-# USER
-# ============================================================
-
-def ensure_user(user_id):
-    try:
-        info = vk_api(
-            "users.get",
-            {
-                "user_ids": user_id,
-                "fields": "first_name,last_name",
-            },
-        )
-
-        first_name = ""
-        last_name = ""
-
-        if info and info.get("response"):
-            user = info["response"][0]
-
-            first_name = user.get(
-                "first_name",
-                "",
-            )
-
-            last_name = user.get(
-                "last_name",
-                "",
-            )
-
-        create_or_update_user(
-            user_id,
-            first_name,
-            last_name,
-        )
-
-        return get_user(user_id)
-
-    except Exception:
-        logger.exception(
-            "Failed to create/update user %s",
-            user_id,
-        )
-
-        return get_user(user_id)
-
-
-# ============================================================
-# TRAINING HELPERS
-# ============================================================
-
-def training_title(training):
-    title = row_value(
-        training,
-        "title",
-        "Тренировка",
-    )
-
-    return title or "Тренировка"
-
-
-def training_number(training):
-    return row_value(
-        training,
-        "training_number",
-        row_value(training, "id"),
-    )
-
-
-def training_date_value(training):
-    value = row_value(
-        training,
-        "training_date",
-    )
-
-    if isinstance(value, date):
-        return value
-
-    return datetime.strptime(
-        str(value),
-        "%Y-%m-%d",
-    ).date()
-
-
-def training_capacity(training):
-    value = row_value(
-        training,
-        "capacity",
-        0,
-    )
-
-    try:
-        return int(value)
-    except Exception:
-        return 0
-
-
-def get_training_participant_count(training_id):
-    try:
-        return get_registration_count(
-            training_id
-        )
-
-    except Exception:
-        connection = get_connection()
-
-        try:
-            cursor = connection.cursor()
-
-            cursor.execute(
-                """
-                SELECT COUNT(*)
-                FROM registrations
-                WHERE training_id = ?
-                  AND status = 'active'
-                """,
-                (training_id,),
-            )
-
-            result = cursor.fetchone()
-
-            if result:
-                return result[0]
-
-            return 0
-
-        finally:
-            connection.close()
-
-
-def training_is_full(training):
-    training_id = row_value(
-        training,
-        "id",
-    )
-
-    if training_id is None:
-        return False
-
-    count = get_training_participant_count(
-        training_id
-    )
-
-    return count >= training_capacity(training)
-
-
-def format_training(
-    training,
-    include_participants=True,
-):
-    training_id = row_value(
-        training,
-        "id",
-    )
-
-    number = training_number(training)
-
-    training_date = training_date_value(
-        training
-    )
-
-    start_time = row_value(
-        training,
-        "start_time",
-        "",
-    )
-
-    end_time = row_value(
-        training,
-        "end_time",
-        "",
-    )
-
-    title = training_title(training)
-
-    category = row_value(
-        training,
-        "category",
-        "",
-    )
-
-    age_group = row_value(
-        training,
-        "age_group",
-        "",
-    )
-
-    level = row_value(
-        training,
-        "level",
-        "",
-    )
-
-    training_format = row_value(
-        training,
-        "format",
-        "",
-    )
-
-    coach = row_value(
-        training,
-        "coach",
-        "",
-    )
-
-    capacity = training_capacity(
-        training
-    )
-
-    price = row_value(
-        training,
-        "price",
-        0,
-    )
-
-    location = row_value(
-        training,
-        "location",
-        "",
-    )
-
-    status = row_value(
-        training,
-        "status",
-        "active",
-    )
-
-    text = (
-        f"🏐 Тренировка №{number}\n"
-        f"📅 {format_date(training_date)}\n"
-        f"⏰ {start_time}–{end_time}\n"
-        f"📌 {title}\n"
-    )
-
-    if category:
-        text += (
-            f"👥 Категория: {category}\n"
-        )
-
-    if age_group:
-        text += (
-            f"🎂 Возраст: {age_group}\n"
-        )
-
-    if level:
-        text += (
-            f"📊 Уровень: {level}\n"
-        )
-
-    if training_format:
-        text += (
-            f"🔹 Формат: {training_format}\n"
-        )
-
-    if coach:
-        text += (
-            f"🏅 Тренер: {coach}\n"
-        )
-
-    if location:
-        text += (
-            f"📍 {location}\n"
-        )
-
-    if price is not None:
-        text += (
-            f"💰 {price}₽\n"
-        )
-
-    if include_participants and training_id:
-        count = get_training_participant_count(
-            training_id
-        )
-
-        text += (
-            f"\n👤 Записано: "
-            f"{count}/{capacity}"
-        )
-
-    if status != "active":
-        text += (
-            f"\n⚠️ Статус: {status}"
-        )
-
-    return text
-
-
-# ============================================================
-# USER MENU
-# ============================================================
-
-def show_main_menu(user_id):
-    clear_state(user_id)
-
-    send_message(
-        user_id,
-        "🏐 VOLLEY WAVE\n\n"
-        "Выберите действие:",
-        main_menu(user_id),
-    )
-
-
-def show_prices(user_id):
-    send_message(
-        user_id,
-        "💰 ЦЕНЫ\n\n"
-        "🏐 Детские тренировки — 600₽\n\n"
-        "🏐 Взрослые тренировки:\n"
-        "1–6 человек — 1200₽/человек\n"
-        "7 и более — 1000₽/человек\n\n"
-        "Минимальная группа взрослых — 4 человека.",
-        back_keyboard(user_id),
-    )
-
-
-def show_locations(user_id):
-    send_message(
-        user_id,
-        "📍 ГДЕ ТРЕНИРУЕМСЯ\n\n"
-        "☀️ Летом:\n"
-        "Парк Гагарина\n\n"
-        "❄️ Зимой:\n"
-        "СК «Арена»\n"
-        "ул. Молодогвардейцев, 7",
-        back_keyboard(user_id),
-    )
-
-
-# ============================================================
-# SCHEDULE — DIRECT DATABASE QUERY
-# ============================================================
-
-def get_schedule_direct(
-    from_date,
-    to_date,
-    category=None,
-):
-    """
-    Надёжная выборка расписания напрямую из SQLite.
-
-    Не зависит от реализации
-    get_upcoming_trainings() в database.py.
-    """
-
-    connection = get_connection()
-
-    try:
-        cursor = connection.cursor()
-
-        query = """
-            SELECT *
-            FROM trainings
-            WHERE training_date >= ?
-              AND training_date <= ?
-              AND status = 'active'
-        """
-
-        params = [
-            from_date,
-            to_date,
-        ]
-
-        if category == "children":
-            query += """
-                AND (
-                    LOWER(category) = 'дети'
-                    OR LOWER(category) = 'children'
-                )
+        conn.execute(
             """
-
-        elif category == "adults":
-            query += """
-                AND (
-                    LOWER(category) = 'взрослые'
-                    OR LOWER(category) = 'adults'
-                )
-            """
-
-        query += """
-            ORDER BY
-                training_date ASC,
-                start_time ASC,
-                training_number ASC
-        """
-
-        logger.info(
-            "DIRECT SCHEDULE QUERY "
-            "from=%s to=%s category=%s",
-            from_date,
-            to_date,
-            category,
-        )
-
-        cursor.execute(
-            query,
-            params,
-        )
-
-        rows = cursor.fetchall()
-
-        logger.info(
-            "DIRECT SCHEDULE RESULT "
-            "category=%s count=%s",
-            category,
-            len(rows),
-        )
-
-        return list(rows)
-
-    except Exception:
-        logger.exception(
-            "DIRECT SCHEDULE QUERY FAILED "
-            "category=%s",
-            category,
-        )
-
-        return []
-
-    finally:
-        connection.close()
-
-
-# ============================================================
-# SCHEDULE
-# ============================================================
-
-def show_schedule_categories(user_id):
-    logger.info(
-        "SHOW SCHEDULE CATEGORIES user=%s",
-        user_id,
-    )
-
-    set_state(
-        user_id,
-        "schedule_category",
-    )
-
-    send_message(
-        user_id,
-        "📅 РАСПИСАНИЕ\n\n"
-        "Выберите категорию:",
-        {
-            "one_time": False,
-            "buttons": [
-                [
-                    button(
-                        "👧 Дети",
-                        "primary",
-                    ),
-                    button(
-                        "🧑 Взрослые",
-                        "primary",
-                    ),
-                ],
-                [
-                    button(
-                        "🏠 Все тренировки",
-                        "secondary",
-                    ),
-                ],
-                [
-                    button(
-                        "⬅️ Назад",
-                        "secondary",
-                    ),
-                ],
-            ],
-        },
-    )
-
-
-def show_schedule(
-    user_id,
-    category=None,
-):
-    logger.info(
-        "SHOW SCHEDULE user=%s category=%s",
-        user_id,
-        category,
-    )
-
-    today = today_local()
-
-    end_date = today + timedelta(
-        days=14
-    )
-
-    trainings = get_schedule_direct(
-        today.isoformat(),
-        end_date.isoformat(),
-        category,
-    )
-
-    if not trainings:
-        logger.warning(
-            "NO SCHEDULE FOUND "
-            "user=%s category=%s "
-            "from=%s to=%s",
-            user_id,
-            category,
-            today,
-            end_date,
-        )
-
-        send_message(
-            user_id,
-            "📅 На ближайшие 14 дней "
-            "подходящих тренировок нет.",
-            back_keyboard(user_id),
-        )
-
-        return
-
-    logger.info(
-        "SCHEDULE FOUND user=%s "
-        "category=%s count=%s",
-        user_id,
-        category,
-        len(trainings),
-    )
-
-    buttons = []
-
-    for training in trainings:
-        training_date = training_date_value(
-            training
-        )
-
-        label = (
-            f"№{training_number(training)} "
-            f"{format_short_date(training_date)} "
-            f"{row_value(training, 'start_time', '')}"
-        )
-
-        buttons.append(
-            [
-                button(
-                    label[:40],
-                    "primary",
-                )
-            ]
-        )
-
-    buttons.append(
-        [
-            button(
-                "⬅️ Назад",
-                "secondary",
+            INSERT INTO users (
+                vk_id,
+                first_name,
+                last_name
             )
-        ]
-    )
-
-    set_state(
-        user_id,
-        "schedule_select_training",
-        {
-            "category": category,
-        },
-    )
-
-    send_message(
-        user_id,
-        "📅 Ближайшие тренировки:\n\n"
-        "Выберите тренировку:",
-        {
-            "one_time": False,
-            "buttons": buttons,
-        },
-    )
-
-
-# ============================================================
-# BOOKING
-# ============================================================
-
-def show_booking_categories(user_id):
-    set_state(
-        user_id,
-        "booking_category",
-    )
-
-    send_message(
-        user_id,
-        "🏐 ЗАПИСЬ НА ТРЕНИРОВКУ\n\n"
-        "Выберите категорию:",
-        {
-            "one_time": False,
-            "buttons": [
-                [
-                    button(
-                        "👧 Дети",
-                        "primary",
-                    ),
-                    button(
-                        "🧑 Взрослые",
-                        "primary",
-                    ),
-                ],
-                [
-                    button(
-                        "🏠 Все тренировки",
-                        "secondary",
-                    ),
-                ],
-                [
-                    button(
-                        "⬅️ Назад",
-                        "secondary",
-                    ),
-                ],
-            ],
-        },
-    )
-
-
-def show_booking_dates(
-    user_id,
-    category,
-):
-    today = today_local()
-
-    dates = []
-
-    for offset in range(7):
-        current = today + timedelta(
-            days=offset
-        )
-
-        try:
-            trainings = get_trainings_by_date(
-                current.isoformat()
-            )
-        except Exception:
-            logger.exception(
-                "Failed to load trainings "
-                "for date %s",
-                current,
-            )
-            trainings = []
-
-        trainings = list(
-            trainings or []
-        )
-
-        if category == "children":
-            trainings = [
-                x
-                for x in trainings
-                if normalize_category(
-                    row_value(
-                        x,
-                        "category",
-                        "",
-                    )
-                ) == "children"
-            ]
-
-        elif category == "adults":
-            trainings = [
-                x
-                for x in trainings
-                if normalize_category(
-                    row_value(
-                        x,
-                        "category",
-                        "",
-                    )
-                ) == "adults"
-            ]
-
-        if trainings:
-            dates.append(current)
-
-    if not dates:
-        send_message(
-            user_id,
-            "🏐 На ближайшие 7 дней "
-            "подходящих тренировок нет.",
-            back_keyboard(user_id),
-        )
-        return
-
-    buttons = []
-
-    for current in dates:
-        buttons.append(
-            [
-                button(
-                    format_short_date(current),
-                    "primary",
-                )
-            ]
-        )
-
-    buttons.append(
-        [
-            button(
-                "⬅️ Назад",
-                "secondary",
-            )
-        ]
-    )
-
-    set_state(
-        user_id,
-        "booking_date",
-        {
-            "category": category,
-        },
-    )
-
-    send_message(
-        user_id,
-        "📅 Выберите день:",
-        {
-            "one_time": False,
-            "buttons": buttons,
-        },
-    )
-
-
-def show_booking_trainings(
-    user_id,
-    category,
-    selected_date,
-):
-    try:
-        trainings = get_trainings_by_date(
-            selected_date.isoformat()
-        )
-
-    except Exception:
-        logger.exception(
-            "Failed to load trainings by date"
-        )
-        trainings = []
-
-    trainings = list(
-        trainings or []
-    )
-
-    if category == "children":
-        trainings = [
-            x
-            for x in trainings
-            if normalize_category(
-                row_value(
-                    x,
-                    "category",
-                    "",
-                )
-            ) == "children"
-        ]
-
-    elif category == "adults":
-        trainings = [
-            x
-            for x in trainings
-            if normalize_category(
-                row_value(
-                    x,
-                    "category",
-                    "",
-                )
-            ) == "adults"
-        ]
-
-    if not trainings:
-        send_message(
-            user_id,
-            "На этот день подходящих "
-            "тренировок нет.",
-            back_keyboard(user_id),
-        )
-        return
-
-    buttons = []
-
-    for training in trainings:
-        label = (
-            f"№{training_number(training)} "
-            f"{row_value(training, 'start_time', '')}–"
-            f"{row_value(training, 'end_time', '')}"
-        )
-
-        buttons.append(
-            [
-                button(
-                    label[:40],
-                    "primary",
-                )
-            ]
-        )
-
-    buttons.append(
-        [
-            button(
-                "⬅️ Назад",
-                "secondary",
-            )
-        ]
-    )
-
-    set_state(
-        user_id,
-        "booking_training",
-        {
-            "category": category,
-            "date": selected_date.isoformat(),
-        },
-    )
-
-    send_message(
-        user_id,
-        f"📅 {format_date(selected_date)}\n\n"
-        "Выберите тренировку:",
-        {
-            "one_time": False,
-            "buttons": buttons,
-        },
-    )
-
-
-def show_training_for_booking(
-    user_id,
-    training,
-):
-    training_id = row_value(
-        training,
-        "id",
-    )
-
-    text = format_training(
-        training
-    )
-
-    text += "\n\n👥 УЧАСТНИКИ\n"
-
-    try:
-        registrations = get_registrations(
-            training_id
-        )
-    except Exception:
-        logger.exception(
-            "Failed to load registrations "
-            "for training %s",
-            training_id,
-        )
-        registrations = []
-
-    registrations = list(
-        registrations or []
-    )
-
-    if not registrations:
-        text += "Пока никто не записан."
-
-    else:
-        for index, registration in enumerate(
-            registrations,
-            start=1,
-        ):
-            first_name = row_value(
-                registration,
-                "first_name",
-                "",
-            )
-
-            last_name = row_value(
-                registration,
-                "last_name",
-                "",
-            )
-
-            name = (
-                f"{first_name} "
-                f"{last_name}"
-            ).strip()
-
-            if not name:
-                name = "Участник"
-
-            text += (
-                f"\n{index}. {name}"
-            )
-
-    buttons = []
-
-    registration = get_registration(
-        training_id,
-        user_id,
-    )
-
-    if registration:
-        buttons.append(
-            [
-                button(
-                    "❌ Отменить запись",
-                    "negative",
-                )
-            ]
-        )
-
-    elif training_is_full(training):
-        buttons.append(
-            [
-                button(
-                    "⏳ Встать в лист ожидания",
-                    "primary",
-                )
-            ]
-        )
-
-    else:
-        buttons.append(
-            [
-                button(
-                    "✅ Записаться",
-                    "positive",
-                )
-            ]
-        )
-
-    buttons.append(
-        [
-            button(
-                "⬅️ Назад",
-                "secondary",
-            ),
-            button(
-                "🏠 Главное меню",
-                "secondary",
-            ),
-        ]
-    )
-
-    set_state(
-        user_id,
-        "training_details",
-        {
-            "training_id": training_id,
-        },
-    )
-
-    send_message(
-        user_id,
-        text,
-        {
-            "one_time": False,
-            "buttons": buttons,
-        },
-    )
-
-
-def register_user_for_training(
-    user_id,
-    training_id,
-):
-    training = get_training(
-        training_id
-    )
-
-    if not training:
-        send_message(
-            user_id,
-            "❌ Тренировка не найдена.",
-            back_keyboard(user_id),
-        )
-        return
-
-    if row_value(
-        training,
-        "status",
-        "active",
-    ) != "active":
-        send_message(
-            user_id,
-            "❌ Эта тренировка "
-            "недоступна для записи.",
-            back_keyboard(user_id),
-        )
-        return
-
-    existing = get_registration(
-        training_id,
-        user_id,
-    )
-
-    if existing:
-        send_message(
-            user_id,
-            "Вы уже записаны "
-            "на эту тренировку.",
-            back_keyboard(user_id),
-        )
-        return
-
-    if training_is_full(training):
-        existing_waitlist = (
-            get_waitlist_entry(
-                training_id,
-                user_id,
-            )
-        )
-
-        if existing_waitlist:
-            send_message(
-                user_id,
-                "⏳ Вы уже находитесь "
-                "в листе ожидания.",
-                back_keyboard(user_id),
-            )
-            return
-
-        add_to_waitlist(
-            training_id,
-            user_id,
-        )
-
-        add_admin_log(
-            user_id,
-            "waitlist_add",
-            "training",
-            training_id,
-            "User added to waitlist",
-        )
-
-        send_message(
-            user_id,
-            "⏳ Тренировка заполнена.\n\n"
-            "Вы добавлены в лист ожидания.",
-            main_menu(user_id),
-        )
-
-        return
-
-    try:
-        add_registration(
-            training_id,
-            user_id,
-        )
-
-        add_admin_log(
-            user_id,
-            "registration_add",
-            "training",
-            training_id,
-            "User registered",
-        )
-
-        send_message(
-            user_id,
-            "✅ Вы успешно записаны!\n\n"
-            + format_training(training),
-            main_menu(user_id),
-        )
-
-    except Exception as error:
-        logger.exception(
-            "Registration error"
-        )
-
-        send_message(
-            user_id,
-            "❌ Не удалось записаться.\n\n"
-            f"Ошибка: {error}",
-            main_menu(user_id),
-        )
-
-
-def cancel_user_registration(
-    user_id,
-    training_id,
-):
-    training = get_training(
-        training_id
-    )
-
-    if not training:
-        send_message(
-            user_id,
-            "❌ Тренировка не найдена.",
-            main_menu(user_id),
-        )
-        return
-
-    training_date = training_date_value(
-        training
-    )
-
-    training_datetime = datetime.combine(
-        training_date,
-        datetime.strptime(
-            row_value(
-                training,
-                "start_time",
-                "00:00",
-            ),
-            "%H:%M",
-        ).time(),
-    ).replace(
-        tzinfo=TIMEZONE
-    )
-
-    now = datetime.now(TIMEZONE)
-
-    if (
-        training_datetime - now
-        < timedelta(hours=24)
-    ):
-        send_message(
-            user_id,
-            "❌ Отменить запись можно "
-            "не позднее чем за 24 часа "
-            "до тренировки.",
-            main_menu(user_id),
-        )
-        return
-
-    registration = get_registration(
-        training_id,
-        user_id,
-    )
-
-    if not registration:
-        send_message(
-            user_id,
-            "Вы не записаны "
-            "на эту тренировку.",
-            main_menu(user_id),
-        )
-        return
-
-    try:
-        cancel_registration(
-            training_id,
-            user_id,
-            "user_cancelled",
-        )
-
-        add_admin_log(
-            user_id,
-            "registration_cancel",
-            "training",
-            training_id,
-            "User cancelled registration",
-        )
-
-        send_message(
-            user_id,
-            "✅ Запись отменена.",
-            main_menu(user_id),
-        )
-
-    except Exception as error:
-        logger.exception(
-            "Cancellation error"
-        )
-
-        send_message(
-            user_id,
-            "❌ Не удалось отменить запись.\n\n"
-            f"Ошибка: {error}",
-            main_menu(user_id),
-        )
-
-
-# ============================================================
-# MY TRAININGS
-# ============================================================
-
-def show_my_trainings(user_id):
-    try:
-        registrations = get_user_registrations(
-            user_id
-        )
-    except Exception:
-        logger.exception(
-            "Failed to load user registrations"
-        )
-        registrations = []
-
-    registrations = list(
-        registrations or []
-    )
-
-    if not registrations:
-        send_message(
-            user_id,
-            "👤 У вас пока нет "
-            "активных записей.",
-            back_keyboard(user_id),
-        )
-        return
-
-    active = []
-
-    for registration in registrations:
-        status = row_value(
-            registration,
-            "status",
-            "active",
-        )
-
-        if status != "active":
-            continue
-
-        training_id = row_value(
-            registration,
-            "training_id",
-        )
-
-        training = None
-
-        if training_id:
-            training = get_training(
-                training_id
-            )
-
-        if training:
-            active.append(training)
-
-    active.sort(
-        key=lambda x: (
-            training_date_value(x),
-            row_value(
-                x,
-                "start_time",
-                "",
-            ),
-        )
-    )
-
-    if not active:
-        send_message(
-            user_id,
-            "👤 У вас пока нет "
-            "предстоящих тренировок.",
-            back_keyboard(user_id),
-        )
-        return
-
-    buttons = []
-
-    for training in active:
-        label = (
-            f"№{training_number(training)} "
-            f"{format_short_date(training_date_value(training))} "
-            f"{row_value(training, 'start_time', '')}"
-        )
-
-        buttons.append(
-            [
-                button(
-                    label[:40],
-                    "primary",
-                )
-            ]
-        )
-
-    buttons.append(
-        [
-            button(
-                "⬅️ Назад",
-                "secondary",
-            )
-        ]
-    )
-
-    set_state(
-        user_id,
-        "my_training_select",
-        {},
-    )
-
-    send_message(
-        user_id,
-        "👤 МОИ ТРЕНИРОВКИ\n\n"
-        "Выберите тренировку:",
-        {
-            "one_time": False,
-            "buttons": buttons,
-        },
-    )
-
-
-# ============================================================
-# ADMIN — DIRECT DB HELPERS
-# ============================================================
-
-def admin_db_trainings(
-    from_date=None,
-    to_date=None,
-):
-    connection = get_connection()
-
-    try:
-        cursor = connection.cursor()
-
-        query = """
-            SELECT *
-            FROM trainings
-            WHERE 1 = 1
-        """
-
-        params = []
-
-        if from_date:
-            query += (
-                " AND training_date >= ?"
-            )
-            params.append(from_date)
-
-        if to_date:
-            query += (
-                " AND training_date <= ?"
-            )
-            params.append(to_date)
-
-        query += """
-            ORDER BY training_date ASC,
-                     start_time ASC,
-                     training_number ASC
-        """
-
-        cursor.execute(
-            query,
-            params,
-        )
-
-        return cursor.fetchall()
-
-    finally:
-        connection.close()
-
-
-def admin_db_training(training_id):
-    connection = get_connection()
-
-    try:
-        cursor = connection.cursor()
-
-        cursor.execute(
-            """
-            SELECT *
-            FROM trainings
-            WHERE id = ?
-            """,
-            (training_id,),
-        )
-
-        return cursor.fetchone()
-
-    finally:
-        connection.close()
-
-
-def admin_create_training(data):
-    connection = get_connection()
-
-    try:
-        cursor = connection.cursor()
-
-        cursor.execute(
-            """
-            SELECT COALESCE(
-                MAX(training_number),
-                0
-            ) + 1
-            FROM trainings
-            """
-        )
-
-        training_number_value = (
-            cursor.fetchone()[0]
-        )
-
-        cursor.execute(
-            """
-            INSERT INTO trainings (
-                training_number,
-                training_date,
-                weekday,
-                start_time,
-                end_time,
-                title,
-                category,
-                age_group,
-                level,
-                format,
-                coach,
-                capacity,
-                price,
-                location,
-                status,
-                template_id,
-                created_at,
-                updated_at
-            )
-            VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, CURRENT_TIMESTAMP,
-                CURRENT_TIMESTAMP
-            )
+            VALUES (?, ?, ?)
+            ON CONFLICT(vk_id)
+            DO UPDATE SET
+                first_name = excluded.first_name,
+                last_name = excluded.last_name,
+                updated_at = CURRENT_TIMESTAMP
             """,
             (
-                training_number_value,
-                data["training_date"],
-                data["weekday"],
-                data["start_time"],
-                data["end_time"],
-                data["title"],
-                data["category"],
-                data["age_group"],
-                data["level"],
-                data["format"],
-                data["coach"],
-                data["capacity"],
-                data["price"],
-                data["location"],
-                "active",
-                data.get("template_id"),
-            ),
+                user_id,
+                first_name,
+                last_name
+            )
         )
 
-        training_id = cursor.lastrowid
-
-        connection.commit()
-
-        return training_id
+        conn.commit()
 
     except Exception:
-        connection.rollback()
-        raise
+        logger.exception("Failed to save user")
 
     finally:
-        connection.close()
+        conn.close()
 
 
-# ============================================================
-# DEFAULT TRAINING SCHEDULE
-# ============================================================
-
-DEFAULT_TEMPLATES = [
-    {
-        "weekday": 0,
-        "start_time": "09:00",
-        "end_time": "11:00",
-        "title": "Детская тренировка",
-        "category": "Дети",
-        "age_group": "9–13",
-        "level": "Начальный / средний",
-        "format": "Группа",
-        "coach": "Алексей",
-        "capacity": 10,
-        "price": 600,
-        "location": "СК «Арена», ул. Молодогвардейцев, 7",
-    },
-    {
-        "weekday": 0,
-        "start_time": "17:00",
-        "end_time": "19:00",
-        "title": "Детская тренировка",
-        "category": "Дети",
-        "age_group": "11–14",
-        "level": "Средний",
-        "format": "Группа",
-        "coach": "Алексей",
-        "capacity": 10,
-        "price": 600,
-        "location": "СК «Арена», ул. Молодогвардейцев, 7",
-    },
-    {
-        "weekday": 0,
-        "start_time": "19:00",
-        "end_time": "20:30",
-        "title": "Техническая тренировка",
-        "category": "Взрослые",
-        "age_group": "18+",
-        "level": "Технический",
-        "format": "Группа",
-        "coach": "Алексей",
-        "capacity": 10,
-        "price": 1200,
-        "location": "СК «Арена», ул. Молодогвардейцев, 7",
-    },
-    {
-        "weekday": 1,
-        "start_time": "09:00",
-        "end_time": "11:00",
-        "title": "Общая тренировка",
-        "category": "Взрослые",
-        "age_group": "18+",
-        "level": "Общий",
-        "format": "Группа",
-        "coach": "Алексей",
-        "capacity": 8,
-        "price": 1200,
-        "location": "СК «Арена», ул. Молодогвардейцев, 7",
-    },
-    {
-        "weekday": 1,
-        "start_time": "17:00",
-        "end_time": "18:30",
-        "title": "Детская тренировка",
-        "category": "Дети",
-        "age_group": "11–14",
-        "level": "Средний",
-        "format": "Группа",
-        "coach": "Алексей",
-        "capacity": 10,
-        "price": 600,
-        "location": "СК «Арена», ул. Молодогвардейцев, 7",
-    },
-    {
-        "weekday": 1,
-        "start_time": "19:30",
-        "end_time": "21:00",
-        "title": "Женская тренировка",
-        "category": "Взрослые",
-        "age_group": "18+",
-        "level": "Средний+",
-        "format": "Женская группа",
-        "coach": "Алексей",
-        "capacity": 8,
-        "price": 1200,
-        "location": "СК «Арена», ул. Молодогвардейцев, 7",
-    },
-    {
-        "weekday": 2,
-        "start_time": "09:00",
-        "end_time": "11:00",
-        "title": "Детская тренировка",
-        "category": "Дети",
-        "age_group": "9–14",
-        "level": "Начальный / средний",
-        "format": "Группа",
-        "coach": "Алексей",
-        "capacity": 10,
-        "price": 600,
-        "location": "СК «Арена», ул. Молодогвардейцев, 7",
-    },
-    {
-        "weekday": 2,
-        "start_time": "17:00",
-        "end_time": "18:00",
-        "title": "Детская тренировка",
-        "category": "Дети",
-        "age_group": "5–9",
-        "level": "Начальный",
-        "format": "Группа",
-        "coach": "Ксения",
-        "capacity": 10,
-        "price": 600,
-        "location": "СК «Арена», ул. Молодогвардейцев, 7",
-    },
-    {
-        "weekday": 2,
-        "start_time": "18:00",
-        "end_time": "19:30",
-        "title": "Продвинутая тренировка",
-        "category": "Взрослые",
-        "age_group": "18+",
-        "level": "Продвинутый",
-        "format": "Группа",
-        "coach": "Алексей",
-        "capacity": 8,
-        "price": 1200,
-        "location": "СК «Арена», ул. Молодогвардейцев, 7",
-    },
-    {
-        "weekday": 2,
-        "start_time": "19:30",
-        "end_time": "21:00",
-        "title": "MIXED",
-        "category": "Взрослые",
-        "age_group": "18+",
-        "level": "Средний+",
-        "format": "MIXED",
-        "coach": "Алексей",
-        "capacity": 8,
-        "price": 1200,
-        "location": "СК «Арена», ул. Молодогвардейцев, 7",
-    },
-    {
-        "weekday": 3,
-        "start_time": "09:00",
-        "end_time": "11:00",
-        "title": "Общая тренировка",
-        "category": "Взрослые",
-        "age_group": "18+",
-        "level": "Общий",
-        "format": "Группа",
-        "coach": "Алексей",
-        "capacity": 8,
-        "price": 1200,
-        "location": "СК «Арена», ул. Молодогвардейцев, 7",
-    },
-    {
-        "weekday": 3,
-        "start_time": "17:00",
-        "end_time": "19:00",
-        "title": "Детская тренировка",
-        "category": "Дети",
-        "age_group": "11–14",
-        "level": "Средний",
-        "format": "Группа",
-        "coach": "Алексей",
-        "capacity": 10,
-        "price": 600,
-        "location": "СК «Арена», ул. Молодогвардейцев, 7",
-    },
-    {
-        "weekday": 3,
-        "start_time": "19:00",
-        "end_time": "20:30",
-        "title": "Тренировка для взрослых",
-        "category": "Взрослые",
-        "age_group": "18+",
-        "level": "Средний",
-        "format": "Группа",
-        "coach": "Алексей",
-        "capacity": 8,
-        "price": 1200,
-        "location": "СК «Арена», ул. Молодогвардейцев, 7",
-    },
-    {
-        "weekday": 4,
-        "start_time": "09:00",
-        "end_time": "11:00",
-        "title": "Детская тренировка",
-        "category": "Дети",
-        "age_group": "9–14",
-        "level": "Начальный / средний",
-        "format": "Группа",
-        "coach": "Алексей",
-        "capacity": 10,
-        "price": 600,
-        "location": "СК «Арена», ул. Молодогвардейцев, 7",
-    },
-    {
-        "weekday": 4,
-        "start_time": "17:00",
-        "end_time": "18:00",
-        "title": "Детская тренировка",
-        "category": "Дети",
-        "age_group": "5–10",
-        "level": "Начальный",
-        "format": "Группа",
-        "coach": "Ксения",
-        "capacity": 10,
-        "price": 600,
-        "location": "СК «Арена», ул. Молодогвардейцев, 7",
-    },
-    {
-        "weekday": 4,
-        "start_time": "17:00",
-        "end_time": "19:00",
-        "title": "Детская тренировка",
-        "category": "Дети",
-        "age_group": "11–14",
-        "level": "Средний",
-        "format": "Группа",
-        "coach": "Алексей",
-        "capacity": 10,
-        "price": 600,
-        "location": "СК «Арена», ул. Молодогвардейцев, 7",
-    },
-    {
-        "weekday": 4,
-        "start_time": "19:00",
-        "end_time": "20:30",
-        "title": "Техническая тренировка",
-        "category": "Взрослые",
-        "age_group": "18+",
-        "level": "Технический",
-        "format": "Группа",
-        "coach": "Алексей",
-        "capacity": 10,
-        "price": 1200,
-        "location": "СК «Арена», ул. Молодогвардейцев, 7",
-    },
-]
-
-
-# ============================================================
-# SCHEDULE GENERATION
-# ============================================================
-
-def get_table_columns(
-    connection,
-    table_name,
-):
-    cursor = connection.cursor()
-
-    cursor.execute(
-        f"PRAGMA table_info({table_name})"
-    )
-
-    rows = cursor.fetchall()
-
-    result = []
-
-    for row in rows:
-        name = row_value(
-            row,
-            "name",
-        )
-
-        if name:
-            result.append(name)
-
-    return result
-
-
-def ensure_default_templates():
-    """
-    Создаёт шаблоны, если их ещё нет.
-
-    Важный момент:
-    created_at и updated_at добавляются явно,
-    если такие поля существуют и являются NOT NULL.
-    """
-
-    connection = get_connection()
+def is_blocked(user_id):
+    conn = get_connection()
 
     try:
-        columns = get_table_columns(
-            connection,
-            "training_templates",
-        )
-
-        if not columns:
-            logger.warning(
-                "training_templates table "
-                "has no columns"
-            )
-            return
-
-        cursor = connection.cursor()
-
-        cursor.execute(
+        row = conn.execute(
             """
-            SELECT COUNT(*)
-            FROM training_templates
-            """
-        )
+            SELECT is_blocked
+            FROM users
+            WHERE vk_id = ?
+            """,
+            (user_id,)
+        ).fetchone()
 
-        count = cursor.fetchone()[0]
+        return bool(row and row["is_blocked"])
+
+    finally:
+        conn.close()
+
+
+# ============================================================
+# TEMPLATES
+# ============================================================
+
+def ensure_default_templates():
+    conn = get_connection()
+
+    try:
+        count = conn.execute(
+            "SELECT COUNT(*) AS count FROM training_templates"
+        ).fetchone()["count"]
 
         if count > 0:
-            logger.info(
-                "Training templates already exist: %s",
-                count,
-            )
             return
 
-        logger.info(
-            "Creating default training templates..."
-        )
+        logger.info("Creating default training templates...")
 
-        for template in DEFAULT_TEMPLATES:
-            values = {}
-
-            for column in columns:
-
-                if column == "weekday":
-                    values[column] = (
-                        template["weekday"]
-                    )
-
-                elif column in template:
-                    values[column] = (
-                        template[column]
-                    )
-
-                elif column == "active":
-                    values[column] = 1
-
-                elif column == "is_active":
-                    values[column] = 1
-
-                elif column == "created_at":
-                    values[column] = (
-                        datetime.now(TIMEZONE)
-                        .strftime(
-                            "%Y-%m-%d %H:%M:%S"
-                        )
-                    )
-
-                elif column == "updated_at":
-                    values[column] = (
-                        datetime.now(TIMEZONE)
-                        .strftime(
-                            "%Y-%m-%d %H:%M:%S"
-                        )
-                    )
-
-            if not values:
-                continue
-
-            column_names = list(
-                values.keys()
+        for item in DEFAULT_TEMPLATES:
+            conn.execute(
+                """
+                INSERT INTO training_templates (
+                    weekday,
+                    start_time,
+                    end_time,
+                    title,
+                    category,
+                    age_group,
+                    level,
+                    format,
+                    coach,
+                    capacity,
+                    price,
+                    location,
+                    active
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                """,
+                (
+                    item["weekday"],
+                    item["start_time"],
+                    item["end_time"],
+                    item["title"],
+                    item["category"],
+                    item["age_group"],
+                    item["level"],
+                    item["format"],
+                    item["coach"],
+                    item["capacity"],
+                    item["price"],
+                    "СК «Арена», ул. Молодогвардейцев, 7",
+                )
             )
 
-            placeholders = ", ".join(
-                ["?"] * len(column_names)
-            )
-
-            sql = (
-                "INSERT INTO training_templates "
-                f"({', '.join(column_names)}) "
-                f"VALUES ({placeholders})"
-            )
-
-            cursor.execute(
-                sql,
-                [
-                    values[column]
-                    for column in column_names
-                ],
-            )
-
-        connection.commit()
+        conn.commit()
 
         logger.info(
             "Default templates created: %s",
-            len(DEFAULT_TEMPLATES),
+            len(DEFAULT_TEMPLATES)
         )
 
     except Exception:
-        connection.rollback()
-
-        logger.exception(
-            "Failed to create default templates"
-        )
-
-        raise
+        conn.rollback()
+        logger.exception("Template initialization failed")
 
     finally:
-        connection.close()
+        conn.close()
+
+
+# ============================================================
+# TRAINING GENERATION
+# ============================================================
+
+def next_training_number(conn):
+    row = conn.execute(
+        """
+        SELECT COALESCE(MAX(training_number), 0) + 1 AS next_number
+        FROM trainings
+        """
+    ).fetchone()
+
+    return row["next_number"]
 
 
 def create_training_directly(
-    template,
     training_date,
+    template
 ):
-    connection = get_connection()
+    conn = get_connection()
 
     try:
-        cursor = connection.cursor()
-
-        cursor.execute(
+        existing = conn.execute(
             """
             SELECT id
             FROM trainings
             WHERE training_date = ?
               AND start_time = ?
               AND end_time = ?
+              AND title = ?
+              AND category = ?
+              AND age_group = ?
             LIMIT 1
             """,
             (
                 training_date.isoformat(),
                 template["start_time"],
                 template["end_time"],
-            ),
-        )
-
-        existing = cursor.fetchone()
+                template["title"],
+                template["category"],
+                template["age_group"],
+            )
+        ).fetchone()
 
         if existing:
             return False
 
-        cursor.execute(
-            """
-            SELECT COALESCE(
-                MAX(training_number),
-                0
-            ) + 1
-            FROM trainings
-            """
+        number = next_training_number(conn)
+
+        location = (
+            "СК «Арена», ул. Молодогвардейцев, 7"
         )
 
-        training_number_value = (
-            cursor.fetchone()[0]
-        )
-
-        cursor.execute(
+        conn.execute(
             """
             INSERT INTO trainings (
                 training_number,
@@ -2310,18 +841,12 @@ def create_training_directly(
                 created_at,
                 updated_at
             )
-            VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, CURRENT_TIMESTAMP,
-                CURRENT_TIMESTAMP
-            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             """,
             (
-                training_number_value,
+                number,
                 training_date.isoformat(),
-                WEEKDAYS[
-                    training_date.weekday()
-                ],
+                WEEKDAYS[training_date.weekday()],
                 template["start_time"],
                 template["end_time"],
                 template["title"],
@@ -2332,122 +857,1032 @@ def create_training_directly(
                 template["coach"],
                 template["capacity"],
                 template["price"],
-                template["location"],
-                "active",
-                None,
-            ),
+                location,
+                template.get("id"),
+            )
         )
 
-        connection.commit()
-
+        conn.commit()
         return True
 
     except Exception:
-        connection.rollback()
+        conn.rollback()
 
         logger.exception(
             "Failed to create training %s %s",
             training_date,
-            template.get("start_time"),
+            template.get("title")
         )
 
-        raise
+        return False
 
     finally:
-        connection.close()
+        conn.close()
 
 
-def generate_default_trainings(
-    weeks=6,
-):
-    today = today_local()
-
-    end_date = (
-        today
-        + timedelta(days=weeks * 7)
-    )
-
+def generate_default_trainings(weeks=6):
     created = 0
 
-    current_date = today
+    today = date.today()
+    end_date = today + timedelta(days=weeks * 7)
 
-    while current_date <= end_date:
+    current = today
 
+    while current <= end_date:
         for template in DEFAULT_TEMPLATES:
-
-            if (
-                current_date.weekday()
-                != template["weekday"]
-            ):
+            if template["weekday"] != current.weekday():
                 continue
 
-            try:
-                was_created = (
-                    create_training_directly(
-                        template,
-                        current_date,
-                    )
-                )
+            if create_training_directly(
+                current,
+                template
+            ):
+                created += 1
 
-                if was_created:
-                    created += 1
-
-            except Exception:
-                logger.exception(
-                    "Generation error "
-                    "for %s",
-                    current_date,
-                )
-
-        current_date += timedelta(
-            days=1
-        )
+        current += timedelta(days=1)
 
     logger.info(
-        "Training generation complete. "
-        "Created: %s",
-        created,
+        "Training generation complete. Created: %s",
+        created
     )
 
     return created
 
 
 def ensure_schedule():
-    logger.info(
-        "Checking training schedule..."
+    logger.info("Checking training schedule...")
+
+    ensure_default_templates()
+
+    created = generate_default_trainings(
+        GENERATION_WEEKS
     )
 
-    try:
-        ensure_default_templates()
+    logger.info(
+        "Schedule check finished. Created %s new trainings.",
+        created
+    )
 
-    except Exception:
-        logger.exception(
-            "Template initialization failed"
+    conn = get_connection()
+
+    try:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM trainings
+            WHERE training_date >= ?
+              AND status != 'cancelled'
+            """,
+            (date.today().isoformat(),)
+        ).fetchone()
+
+        count = row["count"]
+
+        logger.info(
+            "Upcoming trainings in DB: %s",
+            count
         )
 
+        first = conn.execute(
+            """
+            SELECT training_number, training_date, start_time
+            FROM trainings
+            WHERE training_date >= ?
+              AND status != 'cancelled'
+            ORDER BY training_date, start_time
+            LIMIT 1
+            """,
+            (date.today().isoformat(),)
+        ).fetchone()
+
+        if first:
+            logger.info(
+                "First upcoming training: №%s %s %s",
+                first["training_number"],
+                first["training_date"],
+                first["start_time"]
+            )
+
+    finally:
+        conn.close()
+
+
+# ============================================================
+# TRAININGS
+# ============================================================
+
+def get_training(training_id):
+    conn = get_connection()
+
     try:
-        created = generate_default_trainings(
-            weeks=6
+        row = conn.execute(
+            """
+            SELECT *
+            FROM trainings
+            WHERE id = ?
+            """,
+            (training_id,)
+        ).fetchone()
+
+        return dict(row) if row else None
+
+    finally:
+        conn.close()
+
+
+def get_training_by_number(number):
+    conn = get_connection()
+
+    try:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM trainings
+            WHERE training_number = ?
+            """,
+            (number,)
+        ).fetchone()
+
+        return dict(row) if row else None
+
+    finally:
+        conn.close()
+
+
+def get_schedule_direct(
+    category="all",
+    days=SCHEDULE_DAYS
+):
+    today = date.today()
+    end_date = today + timedelta(days=days)
+
+    conn = get_connection()
+
+    try:
+        params = [
+            today.isoformat(),
+            end_date.isoformat()
+        ]
+
+        query = """
+            SELECT *
+            FROM trainings
+            WHERE training_date >= ?
+              AND training_date <= ?
+              AND status != 'cancelled'
+        """
+
+        if category == "children":
+            query += """
+                AND LOWER(category) = 'children'
+            """
+
+        elif category == "adults":
+            query += """
+                AND LOWER(category) = 'adults'
+            """
+
+        query += """
+            ORDER BY training_date, start_time, id
+        """
+
+        rows = conn.execute(
+            query,
+            params
+        ).fetchall()
+
+        result = [dict(row) for row in rows]
+
+        logger.info(
+            "DIRECT SCHEDULE QUERY from=%s to=%s category=%s",
+            today.isoformat(),
+            end_date.isoformat(),
+            category
         )
 
         logger.info(
-            "Schedule check finished. "
-            "Created %s new trainings.",
-            created,
+            "DIRECT SCHEDULE RESULT category=%s count=%s",
+            category,
+            len(result)
+        )
+
+        return result
+
+    finally:
+        conn.close()
+
+
+# ============================================================
+# REGISTRATIONS
+# ============================================================
+
+def get_registration_count(training_id):
+    conn = get_connection()
+
+    try:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM registrations
+            WHERE training_id = ?
+              AND status = 'active'
+            """,
+            (training_id,)
+        ).fetchone()
+
+        return row["count"]
+
+    finally:
+        conn.close()
+
+
+def get_registration(training_id, user_id):
+    conn = get_connection()
+
+    try:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM registrations
+            WHERE training_id = ?
+              AND user_id = ?
+              AND status = 'active'
+            """,
+            (
+                training_id,
+                user_id
+            )
+        ).fetchone()
+
+        return dict(row) if row else None
+
+    finally:
+        conn.close()
+
+
+def add_registration(training_id, user_id):
+    training = get_training(training_id)
+
+    if not training:
+        return False, "Тренировка не найдена."
+
+    if training["status"] != "active":
+        return False, "Эта тренировка недоступна для записи."
+
+    existing = get_registration(
+        training_id,
+        user_id
+    )
+
+    if existing:
+        return False, "Вы уже записаны на эту тренировку."
+
+    count = get_registration_count(training_id)
+
+    if count >= training["capacity"]:
+        return False, "Мест на тренировке больше нет."
+
+    conn = get_connection()
+
+    try:
+        conn.execute(
+            """
+            INSERT INTO registrations (
+                training_id,
+                user_id,
+                status
+            )
+            VALUES (?, ?, 'active')
+            """,
+            (
+                training_id,
+                user_id
+            )
+        )
+
+        conn.commit()
+
+        return True, "Вы успешно записаны!"
+
+    except sqlite3.IntegrityError:
+        return False, "Вы уже записаны на эту тренировку."
+
+    except Exception:
+        conn.rollback()
+        logger.exception("Registration error")
+        return False, "Не удалось записаться."
+
+    finally:
+        conn.close()
+
+
+def get_user_registrations(user_id):
+    conn = get_connection()
+
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                r.*,
+                t.training_number,
+                t.training_date,
+                t.weekday,
+                t.start_time,
+                t.end_time,
+                t.title,
+                t.category,
+                t.age_group,
+                t.level,
+                t.format,
+                t.coach,
+                t.capacity,
+                t.price,
+                t.location,
+                t.status AS training_status
+            FROM registrations r
+            JOIN trainings t
+                ON t.id = r.training_id
+            WHERE r.user_id = ?
+              AND r.status = 'active'
+              AND t.training_date >= ?
+            ORDER BY t.training_date, t.start_time
+            """,
+            (
+                user_id,
+                date.today().isoformat()
+            )
+        ).fetchall()
+
+        return [dict(row) for row in rows]
+
+    finally:
+        conn.close()
+
+
+def cancel_registration(
+    training_id,
+    user_id,
+    reason="Отмена пользователем"
+):
+    training = get_training(training_id)
+
+    if not training:
+        return False, "Тренировка не найдена."
+
+    try:
+        training_datetime = datetime.strptime(
+            f"{training['training_date']} {training['start_time']}",
+            "%Y-%m-%d %H:%M"
+        )
+    except Exception:
+        return False, "Не удалось определить время тренировки."
+
+    if training_datetime - datetime.now() < timedelta(hours=24):
+        return False, (
+            "Отменить запись можно не позднее чем "
+            "за 24 часа до тренировки."
+        )
+
+    conn = get_connection()
+
+    try:
+        row = conn.execute(
+            """
+            SELECT id
+            FROM registrations
+            WHERE training_id = ?
+              AND user_id = ?
+              AND status = 'active'
+            """,
+            (
+                training_id,
+                user_id
+            )
+        ).fetchone()
+
+        if not row:
+            return False, "Активная запись не найдена."
+
+        conn.execute(
+            """
+            UPDATE registrations
+            SET
+                status = 'cancelled',
+                cancelled_at = CURRENT_TIMESTAMP,
+                cancellation_reason = ?
+            WHERE id = ?
+            """,
+            (
+                reason,
+                row["id"]
+            )
+        )
+
+        conn.commit()
+
+        return True, "Запись отменена."
+
+    except Exception:
+        conn.rollback()
+        logger.exception("Cancellation error")
+        return False, "Не удалось отменить запись."
+
+    finally:
+        conn.close()
+
+
+# ============================================================
+# FORMATTING
+# ============================================================
+
+def format_training(training):
+    try:
+        dt = datetime.strptime(
+            training["training_date"],
+            "%Y-%m-%d"
+        )
+
+        date_text = (
+            f"{WEEKDAYS[dt.weekday()]}, "
+            f"{dt.day} "
+            f"{[
+                'января',
+                'февраля',
+                'марта',
+                'апреля',
+                'мая',
+                'июня',
+                'июля',
+                'августа',
+                'сентября',
+                'октября',
+                'ноября',
+                'декабря'
+            ][dt.month - 1]} "
+            f"{dt.year}"
         )
 
     except Exception:
-        logger.exception(
-            "Training generation failed"
+        date_text = training["training_date"]
+
+    count = get_registration_count(
+        training["id"]
+    )
+
+    return (
+        f"🏐 Тренировка №{training['training_number']}\n\n"
+        f"📅 {date_text}\n"
+        f"⏰ {training['start_time']}–{training['end_time']}\n"
+        f"👥 {training['format']}\n"
+        f"🎯 {training['level']}\n"
+        f"👦 Возраст: {training['age_group']}\n"
+        f"👨‍🏫 Тренер: {training['coach']}\n"
+        f"📍 {training['location']}\n"
+        f"💰 {training['price']} ₽\n"
+        f"👤 Мест: {count}/{training['capacity']}"
+    )
+
+
+# ============================================================
+# MAIN MENU
+# ============================================================
+
+def show_main_menu(user_id):
+    clear_state(user_id)
+
+    send_message(
+        user_id,
+        "🏐 VOLLEY WAVE\n\n"
+        "Выберите нужный раздел:",
+        main_keyboard(user_id)
+    )
+
+
+def show_prices(user_id):
+    send_message(
+        user_id,
+        "💰 ЦЕНЫ\n\n"
+        "👧 Дети — 600 ₽ / тренировка\n\n"
+        "🧑 Взрослые:\n"
+        "1–6 человек — 1200 ₽ / человек\n"
+        "7+ человек — 1000 ₽ / человек\n\n"
+        "Минимальный состав взрослой группы — 4 человека.",
+        {
+            "one_time": False,
+            "buttons": [
+                [
+                    button("⬅️ Главное меню", "secondary")
+                ]
+            ]
+        }
+    )
+
+
+def show_location(user_id):
+    send_message(
+        user_id,
+        "📍 ГДЕ ТРЕНИРУЕМСЯ\n\n"
+        "Зимой:\n"
+        "СК «Арена»\n"
+        "ул. Молодогвардейцев, 7\n\n"
+        "Летом:\n"
+        "Парк Гагарина.",
+        {
+            "one_time": False,
+            "buttons": [
+                [
+                    button("⬅️ Главное меню", "secondary")
+                ]
+            ]
+        }
+    )
+
+
+def show_individual(user_id):
+    send_message(
+        user_id,
+        "🎯 ИНДИВИДУАЛЬНАЯ ТРЕНИРОВКА\n\n"
+        "Индивидуальные тренировки проводятся "
+        "по предварительной договорённости.\n\n"
+        "Напишите в сообщении удобные для вас "
+        "дни и время — тренер свяжется с вами.",
+        {
+            "one_time": False,
+            "buttons": [
+                [
+                    button("⬅️ Главное меню", "secondary")
+                ]
+            ]
+        }
+    )
+
+
+def show_question(user_id):
+    send_message(
+        user_id,
+        "❓ ЗАДАТЬ ВОПРОС\n\n"
+        "Напишите ваш вопрос следующим сообщением.",
+        {
+            "one_time": False,
+            "buttons": [
+                [
+                    button("⬅️ Главное меню", "secondary")
+                ]
+            ]
+        }
+    )
+
+    set_state(
+        user_id,
+        "question"
+    )
+
+
+# ============================================================
+# SCHEDULE
+# ============================================================
+
+def show_schedule_categories(user_id):
+    logger.info(
+        "SHOW SCHEDULE CATEGORIES user=%s",
+        user_id
+    )
+
+    set_state(
+        user_id,
+        "schedule_category"
+    )
+
+    send_message(
+        user_id,
+        "📅 РАСПИСАНИЕ\n\n"
+        "Выберите категорию:",
+        {
+            "one_time": False,
+            "buttons": [
+                [
+                    button("👧 Дети", "primary"),
+                    button("🧑 Взрослые", "primary"),
+                ],
+                [
+                    button("🏠 Все тренировки", "secondary"),
+                ],
+                [
+                    button("⬅️ Назад", "secondary"),
+                ],
+            ]
+        }
+    )
+
+
+def show_schedule(user_id, category):
+    logger.info(
+        "SHOW SCHEDULE user=%s category=%s",
+        user_id,
+        category
+    )
+
+    trainings = get_schedule_direct(
+        category,
+        SCHEDULE_DAYS
+    )
+
+    if not trainings:
+        send_message(
+            user_id,
+            "📅 РАСПИСАНИЕ\n\n"
+            "На ближайшие 14 дней тренировок "
+            "этой категории нет.",
+            {
+                "one_time": False,
+                "buttons": [
+                    [
+                        button("⬅️ Расписание", "secondary"),
+                        button("🏠 Главное меню", "secondary"),
+                    ]
+                ]
+            }
+        )
+        return
+
+    text = "📅 РАСПИСАНИЕ\n\n"
+
+    current_date = None
+
+    for training in trainings:
+        if training["training_date"] != current_date:
+            current_date = training["training_date"]
+
+            try:
+                dt = datetime.strptime(
+                    current_date,
+                    "%Y-%m-%d"
+                )
+
+                text += (
+                    f"\n📅 {WEEKDAYS[dt.weekday()]}, "
+                    f"{dt.strftime('%d.%m')}\n"
+                )
+
+            except Exception:
+                text += f"\n📅 {current_date}\n"
+
+        count = get_registration_count(
+            training["id"]
         )
 
+        text += (
+            f"🏐 №{training['training_number']} "
+            f"{training['start_time']}–"
+            f"{training['end_time']} "
+            f"— {training['title']} "
+            f"({count}/{training['capacity']})\n"
+        )
+
+    send_message(
+        user_id,
+        text,
+        {
+            "one_time": False,
+            "buttons": [
+                [
+                    button("🏐 Записаться", "primary")
+                ],
+                [
+                    button("⬅️ Расписание", "secondary"),
+                    button("🏠 Главное меню", "secondary"),
+                ]
+            ]
+        }
+    )
+
 
 # ============================================================
-# ADMIN MENU
+# BOOKING
 # ============================================================
+
+def show_booking_categories(user_id):
+    set_state(
+        user_id,
+        "booking_category"
+    )
+
+    send_message(
+        user_id,
+        "🏐 ЗАПИСЬ НА ТРЕНИРОВКУ\n\n"
+        "Выберите категорию:",
+        {
+            "one_time": False,
+            "buttons": [
+                [
+                    button("👧 Дети", "primary"),
+                    button("🧑 Взрослые", "primary"),
+                ],
+                [
+                    button("🏠 Все тренировки", "secondary"),
+                ],
+                [
+                    button("⬅️ Назад", "secondary"),
+                ]
+            ]
+        }
+    )
+
+
+def show_booking_dates(user_id, category):
+    trainings = get_schedule_direct(
+        category,
+        SCHEDULE_DAYS
+    )
+
+    if not trainings:
+        send_message(
+            user_id,
+            "В ближайшие 14 дней тренировок нет.",
+            {
+                "one_time": False,
+                "buttons": [
+                    [
+                        button("⬅️ Назад", "secondary")
+                    ]
+                ]
+            }
+        )
+        return
+
+    dates = []
+
+    for training in trainings:
+        if training["training_date"] not in dates:
+            dates.append(
+                training["training_date"]
+            )
+
+    set_state(
+        user_id,
+        "booking_date",
+        {
+            "category": category
+        }
+    )
+
+    rows = []
+
+    for item in dates[:10]:
+        try:
+            dt = datetime.strptime(
+                item,
+                "%Y-%m-%d"
+            )
+
+            label = (
+                f"{WEEKDAYS_SHORT[dt.weekday()]} "
+                f"{dt.strftime('%d.%m')}"
+            )
+
+        except Exception:
+            label = item
+
+        rows.append([
+            button(label, "primary")
+        ])
+
+    rows.append([
+        button("⬅️ Назад", "secondary")
+    ])
+
+    send_message(
+        user_id,
+        "📅 Выберите день:",
+        {
+            "one_time": False,
+            "buttons": rows
+        }
+    )
+
+
+def show_booking_trainings(
+    user_id,
+    category,
+    selected_date
+):
+    conn = get_connection()
+
+    try:
+        query = """
+            SELECT *
+            FROM trainings
+            WHERE training_date = ?
+              AND status != 'cancelled'
+        """
+
+        params = [
+            selected_date
+        ]
+
+        if category == "children":
+            query += " AND category = 'children'"
+
+        elif category == "adults":
+            query += " AND category = 'adults'"
+
+        query += """
+            ORDER BY start_time, id
+        """
+
+        rows = conn.execute(
+            query,
+            params
+        ).fetchall()
+
+        trainings = [dict(row) for row in rows]
+
+    finally:
+        conn.close()
+
+    if not trainings:
+        send_message(
+            user_id,
+            "На выбранный день тренировок нет.",
+            {
+                "one_time": False,
+                "buttons": [
+                    [
+                        button("⬅️ Назад", "secondary")
+                    ]
+                ]
+            }
+        )
+        return
+
+    set_state(
+        user_id,
+        "booking_training",
+        {
+            "category": category,
+            "date": selected_date
+        }
+    )
+
+    rows = []
+
+    for training in trainings:
+        count = get_registration_count(
+            training["id"]
+        )
+
+        rows.append([
+            button(
+                f"№{training['training_number']} "
+                f"{training['start_time']}–"
+                f"{training['end_time']} "
+                f"({count}/{training['capacity']})",
+                "primary"
+            )
+        ])
+
+    rows.append([
+        button("⬅️ Назад", "secondary")
+    ])
+
+    send_message(
+        user_id,
+        "🏐 Выберите тренировку:",
+        {
+            "one_time": False,
+            "buttons": rows
+        }
+    )
+
+
+def find_training_from_button(text):
+    if not text.startswith("№"):
+        return None
+
+    try:
+        number = int(
+            text.split()[0][1:]
+        )
+
+        return get_training_by_number(
+            number
+        )
+
+    except Exception:
+        return None
+
+
+def show_training_for_booking(
+    user_id,
+    training
+):
+    count = get_registration_count(
+        training["id"]
+    )
+
+    already = get_registration(
+        training["id"],
+        user_id
+    )
+
+    if already:
+        action_text = "❌ Отменить запись"
+    elif count >= training["capacity"]:
+        action_text = "⏳ Встать в лист ожидания"
+    else:
+        action_text = "✅ Записаться"
+
+    set_state(
+        user_id,
+        "training_action",
+        {
+            "training_id": training["id"]
+        }
+    )
+
+    buttons = [
+        [
+            button(action_text, "primary")
+        ],
+        [
+            button("⬅️ Назад", "secondary")
+        ]
+    ]
+
+    send_message(
+        user_id,
+        format_training(training),
+        {
+            "one_time": False,
+            "buttons": buttons
+        }
+    )
+
+
+# ============================================================
+# MY TRAININGS
+# ============================================================
+
+def show_my_trainings(user_id):
+    trainings = get_user_registrations(
+        user_id
+    )
+
+    if not trainings:
+        send_message(
+            user_id,
+            "👤 МОИ ТРЕНИРОВКИ\n\n"
+            "У вас пока нет предстоящих тренировок.",
+            {
+                "one_time": False,
+                "buttons": [
+                    [
+                        button("🏐 Записаться", "primary")
+                    ],
+                    [
+                        button("⬅️ Главное меню", "secondary")
+                    ]
+                ]
+            }
+        )
+        return
+
+    text = "👤 МОИ ТРЕНИРОВКИ\n\n"
+
+    for training in trainings:
+        text += (
+            f"🏐 №{training['training_number']}\n"
+            f"📅 {training['weekday']}, "
+            f"{training['training_date']}\n"
+            f"⏰ {training['start_time']}–"
+            f"{training['end_time']}\n"
+            f"📍 {training['location']}\n\n"
+        )
+
+    send_message(
+        user_id,
+        text,
+        {
+            "one_time": False,
+            "buttons": [
+                [
+                    button("🏠 Главное меню", "secondary")
+                ]
+            ]
+        }
+    )
+
+
+# ============================================================
+# ADMIN
+# ============================================================
+
+def is_admin(user_id):
+    return user_id in ADMINS
+
 
 def show_admin_menu(user_id):
-    if user_id not in ADMINS:
+    if not is_admin(user_id):
         show_main_menu(user_id)
         return
 
@@ -2457,1948 +1892,911 @@ def show_admin_menu(user_id):
         user_id,
         "⚙️ АДМИН-ПАНЕЛЬ\n\n"
         "Выберите действие:",
-        admin_menu(),
+        admin_keyboard()
     )
 
-
-# ============================================================
-# ADMIN SCHEDULE
-# ============================================================
 
 def admin_show_schedule(user_id):
-    if user_id not in ADMINS:
-        return
-
-    logger.info(
-        "ADMIN %s opened schedule",
-        user_id,
-    )
-
-    today = today_local()
-
-    end_date = (
-        today
-        + timedelta(days=14)
-    )
-
-    trainings = admin_db_trainings(
-        today.isoformat(),
-        end_date.isoformat(),
-    )
-
-    trainings = list(
-        trainings or []
-    )
-
-    logger.info(
-        "ADMIN SCHEDULE RESULT "
-        "user=%s count=%s",
-        user_id,
-        len(trainings),
+    trainings = get_schedule_direct(
+        "all",
+        SCHEDULE_DAYS
     )
 
     if not trainings:
         send_message(
             user_id,
-            "📅 На ближайшие 14 дней "
-            "тренировок нет.",
-            admin_back_keyboard(),
+            "📅 РАСПИСАНИЕ\n\n"
+            "Нет тренировок.",
+            {
+                "one_time": False,
+                "buttons": [
+                    [
+                        button("⬅️ Админ-панель", "secondary")
+                    ]
+                ]
+            }
         )
         return
 
-    buttons = []
+    text = "📅 РАСПИСАНИЕ\n\n"
 
     for training in trainings:
-        label = (
-            f"№{training_number(training)} "
-            f"{format_short_date(training_date_value(training))} "
-            f"{row_value(training, 'start_time', '')}"
+        count = get_registration_count(
+            training["id"]
         )
 
-        buttons.append(
-            [
-                button(
-                    label[:40],
-                    "primary",
-                )
-            ]
+        try:
+            dt = datetime.strptime(
+                training["training_date"],
+                "%Y-%m-%d"
+            )
+
+            date_text = (
+                f"{WEEKDAYS_SHORT[dt.weekday()]} "
+                f"{dt.strftime('%d.%m')}"
+            )
+
+        except Exception:
+            date_text = training["training_date"]
+
+        text += (
+            f"№{training['training_number']} "
+            f"{date_text} "
+            f"{training['start_time']}–"
+            f"{training['end_time']} "
+            f"({count}/{training['capacity']})\n"
         )
-
-    buttons.append(
-        [
-            button(
-                "⬅️ Админ-панель",
-                "secondary",
-            )
-        ]
-    )
-
-    set_state(
-        user_id,
-        "admin_schedule_select",
-        {},
-    )
-
-    send_message(
-        user_id,
-        "📅 РАСПИСАНИЕ\n\n"
-        "Выберите тренировку:",
-        {
-            "one_time": False,
-            "buttons": buttons,
-        },
-    )
-
-
-def admin_show_training(
-    user_id,
-    training,
-):
-    if user_id not in ADMINS:
-        return
-
-    training_id = row_value(
-        training,
-        "id",
-    )
-
-    count = get_training_participant_count(
-        training_id
-    )
-
-    text = format_training(
-        training
-    )
-
-    text += (
-        f"\n\n👥 Участников: "
-        f"{count}/"
-        f"{training_capacity(training)}"
-    )
-
-    buttons = [
-        [
-            button(
-                "👥 Посмотреть участников",
-                "primary",
-            )
-        ],
-        [
-            button(
-                "📋 Посещаемость",
-                "secondary",
-            )
-        ],
-        [
-            button(
-                "⬅️ Назад",
-                "secondary",
-            )
-        ],
-    ]
-
-    set_state(
-        user_id,
-        "admin_training_details",
-        {
-            "training_id": training_id,
-        },
-    )
 
     send_message(
         user_id,
         text,
         {
             "one_time": False,
-            "buttons": buttons,
-        },
+            "buttons": [
+                [
+                    button("⬅️ Админ-панель", "secondary")
+                ]
+            ]
+        }
     )
 
 
-# ============================================================
-# ADMIN PARTICIPANTS
-# ============================================================
-
-def admin_show_participants(
+def admin_show_participants_list(
     user_id,
-    training_id,
+    page=0
 ):
-    if user_id not in ADMINS:
-        return
-
     logger.info(
-        "ADMIN %s requested participants "
-        "for training %s",
+        "ADMIN %s opened participants list page=%s",
         user_id,
-        training_id,
+        page
     )
 
-    training = admin_db_training(
-        training_id
+    today = date.today()
+    end_date = today + timedelta(
+        days=SCHEDULE_DAYS
     )
 
-    if not training:
-        send_message(
-            user_id,
-            "❌ Тренировка не найдена.",
-            admin_back_keyboard(),
-        )
-        return
+    conn = get_connection()
 
     try:
-        registrations = get_registrations(
-            training_id
-        )
-    except Exception:
-        logger.exception(
-            "Failed to get registrations "
-            "for training %s",
-            training_id,
-        )
-        registrations = []
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM trainings
+            WHERE training_date >= ?
+              AND training_date <= ?
+              AND status != 'cancelled'
+            ORDER BY training_date, start_time, id
+            """,
+            (
+                today.isoformat(),
+                end_date.isoformat()
+            )
+        ).fetchall()
 
-    registrations = list(
-        registrations or []
+        trainings = [
+            dict(row)
+            for row in rows
+        ]
+
+    finally:
+        conn.close()
+
+    logger.info(
+        "ADMIN PARTICIPANTS LIST trainings=%s",
+        len(trainings)
     )
 
-    text = (
-        f"👥 УЧАСТНИКИ ТРЕНИРОВКИ №"
-        f"{training_number(training)}\n\n"
-        f"📅 "
-        f"{format_date(training_date_value(training))}\n"
-        f"⏰ "
-        f"{row_value(training, 'start_time', '')}–"
-        f"{row_value(training, 'end_time', '')}\n\n"
+    if not trainings:
+        send_message(
+            user_id,
+            "👥 УЧАСТНИКИ ТРЕНИРОВОК\n\n"
+            "На ближайшие 14 дней тренировок нет.",
+            {
+                "one_time": False,
+                "buttons": [
+                    [
+                        button("⬅️ Админ-панель", "secondary")
+                    ]
+                ]
+            }
+        )
+        return
+
+    total_pages = (
+        len(trainings) +
+        PARTICIPANTS_PAGE_SIZE -
+        1
+    ) // PARTICIPANTS_PAGE_SIZE
+
+    page = max(
+        0,
+        min(
+            page,
+            total_pages - 1
+        )
     )
 
-    if not registrations:
-        text += (
-            "Пока никто не записан."
+    start = (
+        page *
+        PARTICIPANTS_PAGE_SIZE
+    )
+
+    end = start + PARTICIPANTS_PAGE_SIZE
+
+    page_trainings = trainings[start:end]
+
+    buttons = []
+
+    for training in page_trainings:
+        count = get_registration_count(
+            training["id"]
         )
 
-    else:
-        for index, registration in enumerate(
-            registrations,
-            start=1,
-        ):
-            first_name = row_value(
-                registration,
-                "first_name",
-                "",
+        try:
+            dt = datetime.strptime(
+                training["training_date"],
+                "%Y-%m-%d"
             )
 
-            last_name = row_value(
-                registration,
-                "last_name",
-                "",
+            date_text = dt.strftime(
+                "%d.%m"
             )
 
-            vk_id = row_value(
-                registration,
-                "vk_id",
-                row_value(
-                    registration,
-                    "user_id",
-                    "",
-                ),
-            )
+            weekday = WEEKDAYS_SHORT[
+                dt.weekday()
+            ]
 
-            name = (
-                f"{first_name} "
-                f"{last_name}"
-            ).strip()
+        except Exception:
+            date_text = training["training_date"]
+            weekday = ""
 
-            if not name:
-                name = (
-                    f"Пользователь {vk_id}"
-                )
+        label = (
+            f"№{training['training_number']} "
+            f"{weekday}, "
+            f"{date_text} "
+            f"{training['start_time']} "
+            f"({count}/{training['capacity']})"
+        )
 
-            text += (
-                f"{index}. {name}"
-            )
-
-            if vk_id:
-                text += (
-                    f" — ID {vk_id}"
-                )
-
-            text += "\n"
-
-    buttons = [
-        [
+        buttons.append([
             button(
-                "📋 Посещаемость",
-                "secondary",
+                label,
+                "primary"
             )
-        ],
-        [
+        ])
+
+    navigation = []
+
+    if page > 0:
+        navigation.append(
             button(
-                "⬅️ К тренировке",
-                "secondary",
+                "⬅️ Назад",
+                "secondary"
             )
-        ],
-        [
+        )
+
+    if page < total_pages - 1:
+        navigation.append(
             button(
-                "⚙️ Админ-панель",
-                "secondary",
+                "➡️ Далее",
+                "secondary"
             )
-        ],
-    ]
+        )
+
+    if navigation:
+        buttons.append(navigation)
+
+    buttons.append([
+        button(
+            "⬅️ Админ-панель",
+            "secondary"
+        )
+    ])
 
     set_state(
         user_id,
         "admin_participants",
         {
-            "training_id": training_id,
-        },
-    )
-
-    send_message(
-        user_id,
-        text,
-        {
-            "one_time": False,
-            "buttons": buttons,
-        },
-    )
-
-
-# ============================================================
-# ADMIN ATTENDANCE
-# ============================================================
-
-def admin_show_attendance(
-    user_id,
-    training_id,
-):
-    if user_id not in ADMINS:
-        return
-
-    training = admin_db_training(
-        training_id
-    )
-
-    if not training:
-        send_message(
-            user_id,
-            "❌ Тренировка не найдена.",
-            admin_back_keyboard(),
-        )
-        return
-
-    try:
-        registrations = get_registrations(
-            training_id
-        )
-    except Exception:
-        logger.exception(
-            "Failed to load registrations "
-            "for attendance"
-        )
-        registrations = []
-
-    registrations = list(
-        registrations or []
-    )
-
-    try:
-        attendance = (
-            get_training_attendance(
-                training_id
-            )
-        )
-    except Exception:
-        logger.exception(
-            "Failed to load attendance"
-        )
-        attendance = []
-
-    attendance = list(
-        attendance or []
-    )
-
-    attendance_map = {}
-
-    for item in attendance:
-        registration_id = row_value(
-            item,
-            "registration_id",
-        )
-
-        status = row_value(
-            item,
-            "status",
-            "absent",
-        )
-
-        attendance_map[
-            registration_id
-        ] = status
-
-    text = (
-        "📋 ПОСЕЩАЕМОСТЬ\n\n"
-        f"🏐 Тренировка №"
-        f"{training_number(training)}\n"
-        f"📅 "
-        f"{format_date(training_date_value(training))}\n\n"
-    )
-
-    if not registrations:
-        text += "Участников нет."
-
-    else:
-        for index, registration in enumerate(
-            registrations,
-            start=1,
-        ):
-            registration_id = row_value(
-                registration,
-                "id",
-            )
-
-            first_name = row_value(
-                registration,
-                "first_name",
-                "",
-            )
-
-            last_name = row_value(
-                registration,
-                "last_name",
-                "",
-            )
-
-            name = (
-                f"{first_name} "
-                f"{last_name}"
-            ).strip()
-
-            if not name:
-                name = "Участник"
-
-            status = attendance_map.get(
-                registration_id,
-                "not_marked",
-            )
-
-            if status == "present":
-                mark = "✅"
-            elif status == "absent":
-                mark = "❌"
-            else:
-                mark = "⚪"
-
-            text += (
-                f"{index}. {mark} {name}\n"
-            )
-
-    send_message(
-        user_id,
-        text,
-        admin_back_keyboard(),
-    )
-
-
-# ============================================================
-# ADMIN ADD TRAINING
-# ============================================================
-
-def admin_start_add_training(user_id):
-    if user_id not in ADMINS:
-        return
-
-    set_state(
-        user_id,
-        "admin_add_date",
-        {},
-    )
-
-    send_message(
-        user_id,
-        "➕ ДОБАВЛЕНИЕ ТРЕНИРОВКИ\n\n"
-        "Введите дату в формате:\n"
-        "ДД.ММ.ГГГГ\n\n"
-        "Например: 05.10.2026",
-        admin_back_keyboard(),
-    )
-
-
-def admin_save_training(
-    user_id,
-    data,
-):
-    try:
-        training_date = datetime.strptime(
-            data["date"],
-            "%d.%m.%Y",
-        ).date()
-
-        start_time = data["start_time"]
-        end_time = data["end_time"]
-
-        datetime.strptime(
-            start_time,
-            "%H:%M",
-        )
-
-        datetime.strptime(
-            end_time,
-            "%H:%M",
-        )
-
-        training_data = {
-            "training_date":
-                training_date.isoformat(),
-
-            "weekday":
-                WEEKDAYS[
-                    training_date.weekday()
-                ],
-
-            "start_time":
-                start_time,
-
-            "end_time":
-                end_time,
-
-            "title":
-                data["title"],
-
-            "category":
-                data["category"],
-
-            "age_group":
-                data["age_group"],
-
-            "level":
-                data["level"],
-
-            "format":
-                data["format"],
-
-            "coach":
-                data["coach"],
-
-            "capacity":
-                int(data["capacity"]),
-
-            "price":
-                int(data["price"]),
-
-            "location":
-                data.get(
-                    "location",
-                    "СК «Арена», "
-                    "ул. Молодогвардейцев, 7",
-                ),
+            "page": page
         }
-
-        training_id = admin_create_training(
-            training_data
-        )
-
-        add_admin_log(
-            user_id,
-            "training_create",
-            "training",
-            training_id,
-            f"Training created: "
-            f"{training_data}",
-        )
-
-        training = admin_db_training(
-            training_id
-        )
-
-        send_message(
-            user_id,
-            "✅ Тренировка создана!\n\n"
-            + format_training(training),
-            admin_menu(),
-        )
-
-    except Exception as error:
-        logger.exception(
-            "ADMIN CREATE TRAINING ERROR"
-        )
-
-        send_message(
-            user_id,
-            "❌ Не удалось создать "
-            "тренировку.\n\n"
-            f"Ошибка: {error}",
-            admin_menu(),
-        )
-
-
-# ============================================================
-# ADMIN TEMPLATES
-# ============================================================
-
-def admin_show_templates(user_id):
-    if user_id not in ADMINS:
-        return
-
-    connection = get_connection()
-
-    try:
-        cursor = connection.cursor()
-
-        cursor.execute(
-            """
-            SELECT *
-            FROM training_templates
-            ORDER BY weekday ASC,
-                     start_time ASC
-            """
-        )
-
-        templates = cursor.fetchall()
-
-    finally:
-        connection.close()
-
-    templates = list(
-        templates or []
-    )
-
-    if not templates:
-        send_message(
-            user_id,
-            "🧩 Шаблонов тренировок "
-            "пока нет.",
-            admin_back_keyboard(),
-        )
-        return
-
-    text = (
-        "🧩 ШАБЛОНЫ ТРЕНИРОВОК\n\n"
-    )
-
-    for template in templates:
-        text += (
-            f"#{row_value(template, 'id')} "
-            f"{row_value(template, 'weekday', '')} "
-            f"{row_value(template, 'start_time', '')}–"
-            f"{row_value(template, 'end_time', '')}\n"
-            f"{row_value(template, 'title', '')}\n"
-            f"Категория: "
-            f"{row_value(template, 'category', '')}\n"
-            f"Тренер: "
-            f"{row_value(template, 'coach', '')}\n\n"
-        )
-
-    send_message(
-        user_id,
-        text,
-        admin_back_keyboard(),
-    )
-
-
-# ============================================================
-# QUESTIONS / INDIVIDUAL
-# ============================================================
-
-def contact_admins(
-    user_id,
-    subject,
-):
-    set_state(
-        user_id,
-        "contact_message",
-        {
-            "subject": subject,
-        },
-    )
-
-    send_message(
-        user_id,
-        "✍️ Напишите сообщение "
-        "одним сообщением.\n\n"
-        "Мы передадим его администраторам.",
-        back_keyboard(user_id),
-    )
-
-
-def send_question_to_admins(
-    user_id,
-    subject,
-    message,
-):
-    user = get_user(
-        user_id
-    )
-
-    first_name = row_value(
-        user,
-        "first_name",
-        "",
-    )
-
-    last_name = row_value(
-        user,
-        "last_name",
-        "",
-    )
-
-    user_name = (
-        f"{first_name} "
-        f"{last_name}"
-    ).strip()
-
-    if not user_name:
-        user_name = (
-            f"VK ID {user_id}"
-        )
-
-    admin_text = (
-        "📩 НОВОЕ СООБЩЕНИЕ\n\n"
-        f"Тема: {subject}\n"
-        f"От: {user_name}\n"
-        f"VK ID: {user_id}\n\n"
-        f"{message}"
-    )
-
-    for admin_id in ADMINS:
-        send_message(
-            admin_id,
-            admin_text,
-        )
-
-    send_message(
-        user_id,
-        "✅ Сообщение отправлено "
-        "администраторам.\n\n"
-        "Мы свяжемся с вами.",
-        main_menu(user_id),
-    )
-
-
-# ============================================================
-# DATE PARSING
-# ============================================================
-
-def parse_short_date_button(text):
-    parts = text.split(",")
-
-    if len(parts) != 2:
-        raise ValueError
-
-    value = parts[1].strip()
-
-    day, month = value.split(".")
-
-    year = today_local().year
-
-    result = date(
-        year,
-        int(month),
-        int(day),
-    )
-
-    if (
-        result
-        < today_local()
-        - timedelta(days=1)
-    ):
-        result = date(
-            year + 1,
-            int(month),
-            int(day),
-        )
-
-    return result
-
-
-def find_training_from_button(text):
-    if not text.startswith("№"):
-        return None
-
-    try:
-        number_part = (
-            text.split()[0]
-        )
-
-        number = int(
-            number_part.replace(
-                "№",
-                "",
-            )
-        )
-
-    except Exception:
-        return None
-
-    connection = get_connection()
-
-    try:
-        cursor = connection.cursor()
-
-        cursor.execute(
-            """
-            SELECT *
-            FROM trainings
-            WHERE training_number = ?
-            LIMIT 1
-            """,
-            (number,),
-        )
-
-        return cursor.fetchone()
-
-    except Exception:
-        logger.exception(
-            "Failed to find training "
-            "from button: %s",
-            text,
-        )
-        return None
-
-    finally:
-        connection.close()
-
-
-# ============================================================
-# ADMIN PARTICIPANTS LIST
-# ============================================================
-
-def admin_show_participants_list(
-    user_id,
-):
-    if user_id not in ADMINS:
-        return
-
-    logger.info(
-        "ADMIN %s opened participants list",
-        user_id,
-    )
-
-    today = today_local()
-
-    end_date = (
-        today
-        + timedelta(days=14)
-    )
-
-    trainings = admin_db_trainings(
-        today.isoformat(),
-        end_date.isoformat(),
-    )
-
-    trainings = list(
-        trainings or []
-    )
-
-    logger.info(
-        "ADMIN PARTICIPANTS LIST "
-        "trainings=%s",
-        len(trainings),
-    )
-
-    if not trainings:
-        send_message(
-            user_id,
-            "👥 На ближайшие 14 дней "
-            "тренировок нет.",
-            admin_back_keyboard(),
-        )
-        return
-
-    buttons = []
-
-    for training in trainings:
-        count = (
-            get_training_participant_count(
-                row_value(
-                    training,
-                    "id",
-                )
-            )
-        )
-
-        label = (
-            f"№{training_number(training)} "
-            f"{format_short_date(training_date_value(training))} "
-            f"{row_value(training, 'start_time', '')} "
-            f"({count}/"
-            f"{training_capacity(training)})"
-        )
-
-        buttons.append(
-            [
-                button(
-                    label[:40],
-                    "primary",
-                )
-            ]
-        )
-
-    buttons.append(
-        [
-            button(
-                "⬅️ Админ-панель",
-                "secondary",
-            )
-        ]
-    )
-
-    set_state(
-        user_id,
-        "admin_participants_select",
-        {},
     )
 
     send_message(
         user_id,
         "👥 УЧАСТНИКИ ТРЕНИРОВОК\n\n"
+        f"Страница {page + 1} из {total_pages}\n\n"
         "Выберите тренировку:",
         {
             "one_time": False,
-            "buttons": buttons,
-        },
+            "buttons": buttons
+        }
     )
 
 
-# ============================================================
-# ADMIN EXTRA STATE
-# ============================================================
-
-def handle_admin_extra_state(
+def admin_show_participants(
     user_id,
-    text,
-    state,
-    state_data,
+    training
 ):
-    if user_id not in ADMINS:
-        return False
-
-    if state == "admin_participants_select":
-
-        training = (
-            find_training_from_button(
-                text
-            )
-        )
-
-        if training:
-            admin_show_participants(
-                user_id,
-                row_value(
-                    training,
-                    "id",
-                ),
-            )
-
-        return True
-
-    return False
-
-
-# ============================================================
-# EVENT ROUTER
-# ============================================================
-
-def handle_text(
-    user_id,
-    text,
-):
-    text = text.strip()
-
-    logger.info(
-        "MESSAGE user=%s text=%r",
-        user_id,
-        text,
-    )
-
-    if is_user_blocked(user_id):
-        send_message(
-            user_id,
-            "❌ Доступ к боту ограничен.",
-        )
-        return
-
-    ensure_user(user_id)
-
-    # --------------------------------------------------------
-    # GLOBAL BUTTONS
-    # --------------------------------------------------------
-
-    if text == "🏠 Главное меню":
-        show_main_menu(user_id)
-        return
-
-    if text == "⬅️ Назад":
-        state = get_state(
-            user_id
-        )["state"]
-
-        if (
-            state
-            and state.startswith("admin_")
-        ):
-            show_admin_menu(user_id)
-
-        else:
-            show_main_menu(user_id)
-
-        return
-
-    # --------------------------------------------------------
-    # START
-    # --------------------------------------------------------
-
-    if text in (
-        "Привет",
-        "Начать",
-        "/start",
-        "start",
-    ):
-        show_main_menu(user_id)
-        return
-
-    # --------------------------------------------------------
-    # MAIN MENU
-    # --------------------------------------------------------
-
-    if text == "🏐 Записаться":
-        show_booking_categories(
-            user_id
-        )
-        return
-
-    if text == "📅 Расписание":
-        show_schedule_categories(
-            user_id
-        )
-        return
-
-    if text == "👤 Мои тренировки":
-        show_my_trainings(
-            user_id
-        )
-        return
-
-    if text == "💰 Цены":
-        show_prices(user_id)
-        return
-
-    if text == "📍 Где тренируемся":
-        show_locations(user_id)
-        return
-
-    if text == "🎯 Индивидуальная тренировка":
-        contact_admins(
-            user_id,
-            "Индивидуальная тренировка",
-        )
-        return
-
-    if text == "❓ Задать вопрос":
-        contact_admins(
-            user_id,
-            "Вопрос",
-        )
-        return
-
-    # --------------------------------------------------------
-    # ADMIN ENTRY
-    # --------------------------------------------------------
-
-    if text == "⚙️ Админ-панель":
-        if user_id in ADMINS:
-            show_admin_menu(user_id)
-        else:
-            show_main_menu(user_id)
-
-        return
-
-    # --------------------------------------------------------
-    # ADMIN MENU
-    # --------------------------------------------------------
-
-    if user_id in ADMINS:
-
-        if text == "📅 Расписание":
-            admin_show_schedule(
-                user_id
-            )
-            return
-
-        if text == "👥 Участники тренировок":
-            logger.info(
-                "ADMIN PARTICIPANTS BUTTON "
-                "user=%s",
-                user_id,
-            )
-
-            admin_show_participants_list(
-                user_id
-            )
-            return
-
-        if text == "➕ Добавить тренировку":
-            admin_start_add_training(
-                user_id
-            )
-            return
-
-        if text == "🧩 Шаблоны":
-            admin_show_templates(
-                user_id
-            )
-            return
-
-        if text == "👤 Режим пользователя":
-            show_main_menu(user_id)
-            return
-
-    # --------------------------------------------------------
-    # STATE
-    # --------------------------------------------------------
-
-    state_info = get_state(
-        user_id
-    )
-
-    state = state_info.get(
-        "state"
-    )
-
-    state_data = state_info.get(
-        "data",
-        {},
-    )
-
-    logger.info(
-        "STATE user=%s state=%s data=%s",
-        user_id,
-        state,
-        state_data,
-    )
-
-    # --------------------------------------------------------
-    # ADMIN EXTRA STATE
-    # --------------------------------------------------------
-
-    if handle_admin_extra_state(
-        user_id,
-        text,
-        state,
-        state_data,
-    ):
-        return
-
-    # --------------------------------------------------------
-    # BOOKING CATEGORY
-    # --------------------------------------------------------
-
-    if state == "booking_category":
-
-        if text == "👧 Дети":
-            show_booking_dates(
-                user_id,
-                "children",
-            )
-            return
-
-        if text == "🧑 Взрослые":
-            show_booking_dates(
-                user_id,
-                "adults",
-            )
-            return
-
-        if text == "🏠 Все тренировки":
-            show_booking_dates(
-                user_id,
-                "all",
-            )
-            return
-
-    # --------------------------------------------------------
-    # BOOKING DATE
-    # --------------------------------------------------------
-
-    if state == "booking_date":
-
-        try:
-            selected_date = (
-                parse_short_date_button(
-                    text
-                )
-            )
-
-            show_booking_trainings(
-                user_id,
-                state_data.get(
-                    "category"
-                ),
-                selected_date,
-            )
-
-            return
-
-        except Exception:
-            pass
-
-    # --------------------------------------------------------
-    # BOOKING TRAINING
-    # --------------------------------------------------------
-
-    if state == "booking_training":
-
-        training = (
-            find_training_from_button(
-                text
-            )
-        )
-
-        if training:
-            show_training_for_booking(
-                user_id,
-                training,
-            )
-            return
-
-    # --------------------------------------------------------
-    # TRAINING DETAILS
-    # --------------------------------------------------------
-
-    if state == "training_details":
-
-        training_id = state_data.get(
-            "training_id"
-        )
-
-        if text == "✅ Записаться":
-            register_user_for_training(
-                user_id,
-                training_id,
-            )
-            return
-
-        if (
-            text
-            == "⏳ Встать в лист ожидания"
-        ):
-            try:
-                add_to_waitlist(
-                    training_id,
-                    user_id,
-                )
-
-                send_message(
-                    user_id,
-                    "⏳ Вы добавлены "
-                    "в лист ожидания.",
-                    main_menu(user_id),
-                )
-
-            except Exception as error:
-                logger.exception(
-                    "Waitlist error"
-                )
-
-                send_message(
-                    user_id,
-                    f"❌ Ошибка: {error}",
-                    main_menu(user_id),
-                )
-
-            return
-
-        if text == "❌ Отменить запись":
-            cancel_user_registration(
-                user_id,
-                training_id,
-            )
-            return
-
-    # --------------------------------------------------------
-    # MY TRAININGS
-    # --------------------------------------------------------
-
-    if state == "my_training_select":
-
-        training = (
-            find_training_from_button(
-                text
-            )
-        )
-
-        if training:
-            training_id = row_value(
-                training,
-                "id",
-            )
-
-            registration = (
-                get_registration(
-                    training_id,
-                    user_id,
-                )
-            )
-
-            if registration:
-                send_message(
-                    user_id,
-                    format_training(
-                        training
-                    ),
-                    {
-                        "one_time": False,
-                        "buttons": [
-                            [
-                                button(
-                                    "❌ Отменить запись",
-                                    "negative",
-                                )
-                            ],
-                            [
-                                button(
-                                    "🏠 Главное меню",
-                                    "secondary",
-                                )
-                            ],
-                        ],
-                    },
-                )
-
-                set_state(
-                    user_id,
-                    "my_training_details",
-                    {
-                        "training_id":
-                            training_id,
-                    },
-                )
-
-            return
-
-    if state == "my_training_details":
-
-        training_id = state_data.get(
-            "training_id"
-        )
-
-        if text == "❌ Отменить запись":
-            cancel_user_registration(
-                user_id,
-                training_id,
-            )
-            return
-
-    # --------------------------------------------------------
-    # SCHEDULE CATEGORY
-    # --------------------------------------------------------
-
-    if state == "schedule_category":
-
-        logger.info(
-            "SCHEDULE CATEGORY INPUT "
-            "user=%s text=%r",
-            user_id,
-            text,
-        )
-
-        if text == "👧 Дети":
-            logger.info(
-                "SCHEDULE CATEGORY -> CHILDREN"
-            )
-
-            show_schedule(
-                user_id,
-                "children",
-            )
-            return
-
-        if text == "🧑 Взрослые":
-            logger.info(
-                "SCHEDULE CATEGORY -> ADULTS"
-            )
-
-            show_schedule(
-                user_id,
-                "adults",
-            )
-            return
-
-        if text == "🏠 Все тренировки":
-            logger.info(
-                "SCHEDULE CATEGORY -> ALL"
-            )
-
-            show_schedule(
-                user_id,
-                None,
-            )
-            return
-
-        logger.warning(
-            "UNKNOWN SCHEDULE CATEGORY "
-            "user=%s text=%r",
-            user_id,
-            text,
-        )
-
-    # --------------------------------------------------------
-    # SCHEDULE TRAINING
-    # --------------------------------------------------------
-
-    if state == "schedule_select_training":
-
-        training = (
-            find_training_from_button(
-                text
-            )
-        )
-
-        if training:
-            send_message(
-                user_id,
-                format_training(
-                    training
-                ),
-                back_keyboard(user_id),
-            )
-
-            return
-
-    # --------------------------------------------------------
-    # CONTACT
-    # --------------------------------------------------------
-
-    if state == "contact_message":
-
-        send_question_to_admins(
-            user_id,
-            state_data.get(
-                "subject",
-                "Вопрос",
-            ),
-            text,
-        )
-
-        return
-
-    # --------------------------------------------------------
-    # ADMIN STATES
-    # --------------------------------------------------------
-
-    if user_id in ADMINS:
-
-        if state == "admin_schedule_select":
-
-            training = (
-                find_training_from_button(
-                    text
-                )
-            )
-
-            if training:
-                admin_show_training(
-                    user_id,
-                    training,
-                )
-
-            return
-
-        if state == "admin_training_details":
-
-            training_id = state_data.get(
-                "training_id"
-            )
-
-            if (
-                text
-                == "👥 Посмотреть участников"
-            ):
-                admin_show_participants(
-                    user_id,
-                    training_id,
-                )
-                return
-
-            if text == "📋 Посещаемость":
-                admin_show_attendance(
-                    user_id,
-                    training_id,
-                )
-                return
-
-        if state == "admin_participants":
-
-            training_id = state_data.get(
-                "training_id"
-            )
-
-            if text == "📋 Посещаемость":
-                admin_show_attendance(
-                    user_id,
-                    training_id,
-                )
-                return
-
-            if text == "⬅️ К тренировке":
-                training = (
-                    admin_db_training(
-                        training_id
-                    )
-                )
-
-                if training:
-                    admin_show_training(
-                        user_id,
-                        training,
-                    )
-
-                return
-
-        # ----------------------------------------------------
-        # ADD TRAINING
-        # ----------------------------------------------------
-
-        if state == "admin_add_date":
-
-            try:
-                datetime.strptime(
-                    text,
-                    "%d.%m.%Y",
-                )
-
-                set_state(
-                    user_id,
-                    "admin_add_start_time",
-                    {
-                        "date": text,
-                    },
-                )
-
-                send_message(
-                    user_id,
-                    "⏰ Введите время начала:\n\n"
-                    "Например: 17:00",
-                    admin_back_keyboard(),
-                )
-
-            except ValueError:
-                send_message(
-                    user_id,
-                    "❌ Неверный формат.\n\n"
-                    "Введите дату как "
-                    "ДД.ММ.ГГГГ",
-                    admin_back_keyboard(),
-                )
-
-            return
-
-        if state == "admin_add_start_time":
-
-            try:
-                datetime.strptime(
-                    text,
-                    "%H:%M",
-                )
-
-                data = dict(
-                    state_data
-                )
-
-                data["start_time"] = text
-
-                set_state(
-                    user_id,
-                    "admin_add_end_time",
-                    data,
-                )
-
-                send_message(
-                    user_id,
-                    "⏰ Введите время окончания:\n\n"
-                    "Например: 19:00",
-                    admin_back_keyboard(),
-                )
-
-            except ValueError:
-                send_message(
-                    user_id,
-                    "❌ Неверный формат.\n\n"
-                    "Введите время как ЧЧ:ММ",
-                    admin_back_keyboard(),
-                )
-
-            return
-
-        if state == "admin_add_end_time":
-
-            try:
-                datetime.strptime(
-                    text,
-                    "%H:%M",
-                )
-
-                data = dict(
-                    state_data
-                )
-
-                data["end_time"] = text
-
-                set_state(
-                    user_id,
-                    "admin_add_title",
-                    data,
-                )
-
-                send_message(
-                    user_id,
-                    "📌 Введите название "
-                    "тренировки:",
-                    admin_back_keyboard(),
-                )
-
-            except ValueError:
-                send_message(
-                    user_id,
-                    "❌ Неверный формат времени.",
-                    admin_back_keyboard(),
-                )
-
-            return
-
-        if state == "admin_add_title":
-
-            data = dict(
-                state_data
-            )
-
-            data["title"] = text
-
-            set_state(
-                user_id,
-                "admin_add_category",
-                data,
-            )
-
-            send_message(
-                user_id,
-                "👥 Выберите категорию:",
-                {
-                    "one_time": False,
-                    "buttons": [
-                        [
-                            button(
-                                "Дети",
-                                "primary",
-                            ),
-                            button(
-                                "Взрослые",
-                                "primary",
-                            ),
-                        ],
-                        [
-                            button(
-                                "Другое",
-                                "secondary",
-                            ),
-                        ],
-                    ],
-                },
-            )
-
-            return
-
-        if state == "admin_add_category":
-
-            data = dict(
-                state_data
-            )
-
-            data["category"] = text
-
-            set_state(
-                user_id,
-                "admin_add_age",
-                data,
-            )
-
-            send_message(
-                user_id,
-                "🎂 Введите возрастную "
-                "группу:\n\n"
-                "Например: 11–14\n"
-                "или: 18+",
-                admin_back_keyboard(),
-            )
-
-            return
-
-        if state == "admin_add_age":
-
-            data = dict(
-                state_data
-            )
-
-            data["age_group"] = text
-
-            set_state(
-                user_id,
-                "admin_add_level",
-                data,
-            )
-
-            send_message(
-                user_id,
-                "📊 Введите уровень:\n\n"
-                "Например: Начальный\n"
-                "Средний\n"
-                "Продвинутый",
-                admin_back_keyboard(),
-            )
-
-            return
-
-        if state == "admin_add_level":
-
-            data = dict(
-                state_data
-            )
-
-            data["level"] = text
-
-            set_state(
-                user_id,
-                "admin_add_format",
-                data,
-            )
-
-            send_message(
-                user_id,
-                "🔹 Введите формат:\n\n"
-                "Например: Группа",
-                admin_back_keyboard(),
-            )
-
-            return
-
-        if state == "admin_add_format":
-
-            data = dict(
-                state_data
-            )
-
-            data["format"] = text
-
-            set_state(
-                user_id,
-                "admin_add_coach",
-                data,
-            )
-
-            send_message(
-                user_id,
-                "🏅 Введите имя тренера:",
-                admin_back_keyboard(),
-            )
-
-            return
-
-        if state == "admin_add_coach":
-
-            data = dict(
-                state_data
-            )
-
-            data["coach"] = text
-
-            set_state(
-                user_id,
-                "admin_add_capacity",
-                data,
-            )
-
-            send_message(
-                user_id,
-                "👥 Введите максимальное "
-                "количество участников:\n\n"
-                "Например: 10",
-                admin_back_keyboard(),
-            )
-
-            return
-
-        if state == "admin_add_capacity":
-
-            try:
-                capacity = int(text)
-
-                if capacity <= 0:
-                    raise ValueError
-
-                data = dict(
-                    state_data
-                )
-
-                data["capacity"] = capacity
-
-                set_state(
-                    user_id,
-                    "admin_add_price",
-                    data,
-                )
-
-                send_message(
-                    user_id,
-                    "💰 Введите стоимость:\n\n"
-                    "Например: 600",
-                    admin_back_keyboard(),
-                )
-
-            except ValueError:
-                send_message(
-                    user_id,
-                    "❌ Введите целое число.",
-                    admin_back_keyboard(),
-                )
-
-            return
-
-        if state == "admin_add_price":
-
-            try:
-                price = int(text)
-
-                if price < 0:
-                    raise ValueError
-
-                data = dict(
-                    state_data
-                )
-
-                data["price"] = price
-
-                set_state(
-                    user_id,
-                    "admin_add_location",
-                    data,
-                )
-
-                send_message(
-                    user_id,
-                    "📍 Введите место "
-                    "тренировки:\n\n"
-                    "Например:\n"
-                    "СК «Арена», "
-                    "ул. Молодогвардейцев, 7",
-                    admin_back_keyboard(),
-                )
-
-            except ValueError:
-                send_message(
-                    user_id,
-                    "❌ Введите целое число.",
-                    admin_back_keyboard(),
-                )
-
-            return
-
-        if state == "admin_add_location":
-
-            data = dict(
-                state_data
-            )
-
-            data["location"] = text
-
-            admin_save_training(
-                user_id,
-                data,
-            )
-
-            clear_state(
-                user_id
-            )
-
-            return
-
-    # --------------------------------------------------------
-    # UNKNOWN
-    # --------------------------------------------------------
-
-    logger.info(
-        "UNHANDLED MESSAGE "
-        "user=%s state=%s text=%r",
-        user_id,
-        state,
-        text,
-    )
-
-    show_main_menu(user_id)
-
-
-# ============================================================
-# VK CALLBACK
-# ============================================================
-
-@app.route(
-    "/callback",
-    methods=["POST"],
-)
-def callback():
+    conn = get_connection()
 
     try:
-        data = (
-            request.get_json(
-                silent=True
+        rows = conn.execute(
+            """
+            SELECT
+                r.id,
+                r.user_id,
+                r.registered_at,
+                u.first_name,
+                u.last_name
+            FROM registrations r
+            LEFT JOIN users u
+                ON u.vk_id = r.user_id
+            WHERE r.training_id = ?
+              AND r.status = 'active'
+            ORDER BY r.registered_at
+            """,
+            (training["id"],)
+        ).fetchall()
+
+        participants = [
+            dict(row)
+            for row in rows
+        ]
+
+    finally:
+        conn.close()
+
+    text = (
+        f"👥 УЧАСТНИКИ ТРЕНИРОВКИ №"
+        f"{training['training_number']}\n\n"
+        f"📅 {training['training_date']}\n"
+        f"⏰ {training['start_time']}–"
+        f"{training['end_time']}\n\n"
+    )
+
+    if not participants:
+        text += "Пока никто не записан."
+
+    else:
+        for index, person in enumerate(
+            participants,
+            start=1
+        ):
+            name = (
+                f"{person.get('first_name', '')} "
+                f"{person.get('last_name', '')}"
+            ).strip()
+
+            if not name:
+                name = f"VK ID {person['user_id']}"
+
+            text += (
+                f"{index}. {name}\n"
             )
-            or {}
+
+    send_message(
+        user_id,
+        text,
+        {
+            "one_time": False,
+            "buttons": [
+                [
+                    button(
+                        "⬅️ К тренировкам",
+                        "secondary"
+                    )
+                ],
+                [
+                    button(
+                        "⚙️ Админ-панель",
+                        "secondary"
+                    )
+                ]
+            ]
+        }
+    )
+
+
+# ============================================================
+# ADMIN CREATE TRAINING
+# ============================================================
+
+def admin_create_training_start(user_id):
+    set_state(
+        user_id,
+        "admin_create_date"
+    )
+
+    send_message(
+        user_id,
+        "➕ СОЗДАНИЕ ТРЕНИРОВКИ\n\n"
+        "Введите дату в формате:\n"
+        "05.10.2026",
+        {
+            "one_time": False,
+            "buttons": [
+                [
+                    button("⬅️ Отмена", "secondary")
+                ]
+            ]
+        }
+    )
+
+
+def admin_create_training_date(
+    user_id,
+    text
+):
+    try:
+        dt = datetime.strptime(
+            text.strip(),
+            "%d.%m.%Y"
         )
+
+    except ValueError:
+        send_message(
+            user_id,
+            "❌ Неверный формат даты.\n\n"
+            "Введите, например:\n"
+            "05.10.2026"
+        )
+        return
+
+    set_state(
+        user_id,
+        "admin_create_start",
+        {
+            "date": dt.strftime("%Y-%m-%d")
+        }
+    )
+
+    send_message(
+        user_id,
+        "Введите время начала:\n"
+        "Например: 17:00",
+        {
+            "one_time": False,
+            "buttons": [
+                [
+                    button("⬅️ Отмена", "secondary")
+                ]
+            ]
+        }
+    )
+
+
+def admin_create_training_start_time(
+    user_id,
+    text
+):
+    try:
+        datetime.strptime(
+            text.strip(),
+            "%H:%M"
+        )
+
+    except ValueError:
+        send_message(
+            user_id,
+            "❌ Неверное время.\n"
+            "Используйте формат 17:00."
+        )
+        return
+
+    state = get_state(user_id)
+
+    data = dict(
+        state.get("data", {})
+    )
+
+    data["start_time"] = text.strip()
+
+    set_state(
+        user_id,
+        "admin_create_end",
+        data
+    )
+
+    send_message(
+        user_id,
+        "Введите время окончания:\n"
+        "Например: 19:00",
+        {
+            "one_time": False,
+            "buttons": [
+                [
+                    button("⬅️ Отмена", "secondary")
+                ]
+            ]
+        }
+    )
+
+
+def admin_create_training_end_time(
+    user_id,
+    text
+):
+    try:
+        datetime.strptime(
+            text.strip(),
+            "%H:%M"
+        )
+
+    except ValueError:
+        send_message(
+            user_id,
+            "❌ Неверное время.\n"
+            "Используйте формат 19:00."
+        )
+        return
+
+    state = get_state(user_id)
+
+    data = dict(
+        state.get("data", {})
+    )
+
+    data["end_time"] = text.strip()
+
+    set_state(
+        user_id,
+        "admin_create_title",
+        data
+    )
+
+    send_message(
+        user_id,
+        "Введите название тренировки:",
+        {
+            "one_time": False,
+            "buttons": [
+                [
+                    button("⬅️ Отмена", "secondary")
+                ]
+            ]
+        }
+    )
+
+
+def admin_create_training_title(
+    user_id,
+    text
+):
+    state = get_state(user_id)
+
+    data = dict(
+        state.get("data", {})
+    )
+
+    data["title"] = text.strip()
+
+    set_state(
+        user_id,
+        "admin_create_category",
+        data
+    )
+
+    send_message(
+        user_id,
+        "Выберите категорию:",
+        {
+            "one_time": False,
+            "buttons": [
+                [
+                    button("👧 Дети", "primary"),
+                    button("🧑 Взрослые", "primary"),
+                ],
+                [
+                    button("⬅️ Отмена", "secondary")
+                ]
+            ]
+        }
+    )
+
+
+def admin_create_training_category(
+    user_id,
+    text
+):
+    if text == "👧 Дети":
+        category = "children"
+
+    elif text == "🧑 Взрослые":
+        category = "adults"
+
+    else:
+        send_message(
+            user_id,
+            "Выберите категорию кнопкой."
+        )
+        return
+
+    state = get_state(user_id)
+
+    data = dict(
+        state.get("data", {})
+    )
+
+    data["category"] = category
+
+    set_state(
+        user_id,
+        "admin_create_capacity",
+        data
+    )
+
+    send_message(
+        user_id,
+        "Введите количество мест:\n"
+        "Например: 10"
+    )
+
+
+def admin_create_training_capacity(
+    user_id,
+    text
+):
+    try:
+        capacity = int(
+            text.strip()
+        )
+
+        if capacity <= 0:
+            raise ValueError
+
+    except ValueError:
+        send_message(
+            user_id,
+            "❌ Введите положительное число."
+        )
+        return
+
+    state = get_state(user_id)
+
+    data = dict(
+        state.get("data", {})
+    )
+
+    data["capacity"] = capacity
+
+    set_state(
+        user_id,
+        "admin_create_price",
+        data
+    )
+
+    send_message(
+        user_id,
+        "Введите стоимость тренировки:\n"
+        "Например: 600"
+    )
+
+
+def admin_create_training_price(
+    user_id,
+    text
+):
+    try:
+        price = int(
+            text.strip()
+        )
+
+        if price < 0:
+            raise ValueError
+
+    except ValueError:
+        send_message(
+            user_id,
+            "❌ Введите стоимость числом."
+        )
+        return
+
+    state = get_state(user_id)
+
+    data = dict(
+        state.get("data", {})
+    )
+
+    data["price"] = price
+
+    set_state(
+        user_id,
+        "admin_create_age",
+        data
+    )
+
+    send_message(
+        user_id,
+        "Введите возрастную группу:\n"
+        "Например: 11–14 лет"
+    )
+
+
+def admin_create_training_age(
+    user_id,
+    text
+):
+    state = get_state(user_id)
+
+    data = dict(
+        state.get("data", {})
+    )
+
+    data["age_group"] = text.strip()
+
+    set_state(
+        user_id,
+        "admin_create_level",
+        data
+    )
+
+    send_message(
+        user_id,
+        "Введите уровень:\n"
+        "Например: Средний"
+    )
+
+
+def admin_create_training_level(
+    user_id,
+    text
+):
+    state = get_state(user_id)
+
+    data = dict(
+        state.get("data", {})
+    )
+
+    data["level"] = text.strip()
+
+    set_state(
+        user_id,
+        "admin_create_coach",
+        data
+    )
+
+    send_message(
+        user_id,
+        "Введите имя тренера:\n"
+        "Например: Алексей"
+    )
+
+
+def admin_create_training_coach(
+    user_id,
+    text
+):
+    state = get_state(user_id)
+
+    data = dict(
+        state.get("data", {})
+    )
+
+    data["coach"] = text.strip()
+
+    set_state(
+        user_id,
+        "admin_create_confirm",
+        data
+    )
+
+    summary = (
+        "➕ НОВАЯ ТРЕНИРОВКА\n\n"
+        f"📅 {data['date']}\n"
+        f"⏰ {data['start_time']}–{data['end_time']}\n"
+        f"🏐 {data['title']}\n"
+        f"👥 {'Дети' if data['category'] == 'children' else 'Взрослые'}\n"
+        f"👦 {data['age_group']}\n"
+        f"🎯 {data['level']}\n"
+        f"👨‍🏫 {data['coach']}\n"
+        f"👤 Мест: {data['capacity']}\n"
+        f"💰 Цена: {data['price']} ₽\n\n"
+        "Создать тренировку?"
+    )
+
+    send_message(
+        user_id,
+        summary,
+        {
+            "one_time": False,
+            "buttons": [
+                [
+                    button("✅ Создать", "positive"),
+                    button("❌ Отмена", "secondary"),
+                ]
+            ]
+        }
+    )
+
+
+def admin_create_training_confirm(
+    user_id
+):
+    state = get_state(user_id)
+
+    data = state.get(
+        "data",
+        {}
+    )
+
+    conn = get_connection()
+
+    try:
+        existing = conn.execute(
+            """
+            SELECT id
+            FROM trainings
+            WHERE training_date = ?
+              AND start_time = ?
+              AND end_time = ?
+              AND title = ?
+            LIMIT 1
+            """,
+            (
+                data["date"],
+                data["start_time"],
+                data["end_time"],
+                data["title"]
+            )
+        ).fetchone()
+
+        if existing:
+            send_message(
+                user_id,
+                "❌ Такая тренировка уже существует."
+            )
+            return
+
+        number = next_training_number(conn)
+
+        dt = datetime.strptime(
+            data["date"],
+            "%Y-%m-%d"
+        )
+
+        conn.execute(
+            """
+            INSERT INTO trainings (
+                training_number,
+                training_date,
+                weekday,
+                start_time,
+                end_time,
+                title,
+                category,
+                age_group,
+                level,
+                format,
+                coach,
+                capacity,
+                price,
+                location,
+                status,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """,
+            (
+                number,
+                data["date"],
+                WEEKDAYS[dt.weekday()],
+                data["start_time"],
+                data["end_time"],
+                data["title"],
+                data["category"],
+                data["age_group"],
+                data["level"],
+                "Группа",
+                data["coach"],
+                data["capacity"],
+                data["price"],
+                "СК «Арена», ул. Молодогвардейцев, 7",
+            )
+        )
+
+        conn.commit()
+
+        logger.info(
+            "ADMIN %s created training №%s",
+            user_id,
+            number
+        )
+
+        send_message(
+            user_id,
+            f"✅ Тренировка №{number} создана!",
+            {
+                "one_time": False,
+                "buttons": [
+                    [
+                        button(
+                            "⚙️ Админ-панель",
+                            "primary"
+                        )
+                    ]
+                ]
+            }
+        )
+
+    except Exception:
+        conn.rollback()
+
+        logger.exception(
+            "Admin training creation failed"
+        )
+
+        send_message(
+            user_id,
+            "❌ Не удалось создать тренировку.\n\n"
+            "Ошибка записана в Logs Render."
+        )
+
+    finally:
+        conn.close()
+
+    clear_state(user_id)
+
+
+# ============================================================
+# CALLBACK
+# ============================================================
+
+@app.route("/", methods=["GET"])
+def index():
+    return "VOLLEY WAVE VK BOT OK", 200
+
+
+@app.route("/callback", methods=["POST"])
+def callback():
+    try:
+        data = request.get_json(
+            silent=True
+        ) or {}
 
         logger.info(
             "VK EVENT: %s",
-            data,
+            data
         )
 
-        if VK_SECRET_KEY:
-            secret = data.get(
-                "secret"
-            )
-
-            if secret != VK_SECRET_KEY:
-                logger.warning(
-                    "Invalid secret key"
-                )
-
-                return (
-                    "invalid secret",
-                    403,
-                )
-
-        event_type = data.get(
-            "type"
-        )
-
-        if event_type == "confirmation":
-            logger.info(
-                "VK confirmation request"
-            )
-
+        if data.get("type") == "confirmation":
             return (
-                VK_CONFIRMATION_TOKEN
-                or "",
-                200,
+                VK_CONFIRMATION_TOKEN or "",
+                200
             )
 
-        if event_type != "message_new":
+        if data.get("type") != "message_new":
             return "ok", 200
 
         obj = data.get(
             "object",
-            {},
+            {}
         )
 
         message = obj.get(
             "message",
-            {},
+            {}
         )
 
         user_id = (
@@ -4410,60 +2808,639 @@ def callback():
             message.get("text")
             or obj.get("text")
             or ""
-        )
+        ).strip()
 
         if not user_id:
-            logger.warning(
-                "No user_id in event"
-            )
-
             return "ok", 200
 
         logger.info(
             "MESSAGE_NEW user=%s text=%r",
             user_id,
-            text,
+            text
         )
 
-        handle_text(
-            int(user_id),
-            str(text),
+        save_user(user_id)
+
+        if is_blocked(user_id):
+            return "ok", 200
+
+        handle_message(
+            user_id,
+            text
         )
 
         return "ok", 200
 
     except Exception:
         logger.exception(
-            "CALLBACK ERROR"
+            "Callback processing error"
         )
 
         return "ok", 200
 
 
 # ============================================================
-# HEALTH
+# MESSAGE HANDLER
 # ============================================================
 
-@app.route(
-    "/",
-    methods=["GET"],
-)
-def health():
-    return (
-        "VOLLEY WAVE VK BOT: OK",
-        200,
+def handle_message(
+    user_id,
+    text
+):
+    logger.info(
+        "MESSAGE user=%s text=%r",
+        user_id,
+        text
     )
 
+    # --------------------------------------------------------
+    # GLOBAL NAVIGATION
+    # --------------------------------------------------------
 
-@app.route(
-    "/health",
-    methods=["GET"],
-)
-def health_check():
-    return {
-        "status": "ok",
-        "service": "volley-wave-vk-bot",
-    }, 200
+    if text in (
+        "🏠 Главное меню",
+        "Главное меню"
+    ):
+        show_main_menu(user_id)
+        return
+
+    if text in (
+        "⬅️ Главное меню",
+        "Назад в главное меню"
+    ):
+        show_main_menu(user_id)
+        return
+
+    if text in (
+        "⚙️ Админ-панель",
+        "Админ-панель"
+    ):
+        if is_admin(user_id):
+            show_admin_menu(user_id)
+        else:
+            show_main_menu(user_id)
+
+        return
+
+    if text in (
+        "⬅️ Админ-панель",
+    ):
+        if is_admin(user_id):
+            show_admin_menu(user_id)
+        else:
+            show_main_menu(user_id)
+
+        return
+
+    # --------------------------------------------------------
+    # ADMIN PARTICIPANTS PAGINATION
+    # --------------------------------------------------------
+
+    state = get_state(user_id)
+
+    if (
+        is_admin(user_id)
+        and state["state"] == "admin_participants"
+    ):
+        if text == "➡️ Далее":
+            page = state["data"].get(
+                "page",
+                0
+            ) + 1
+
+            admin_show_participants_list(
+                user_id,
+                page
+            )
+            return
+
+        if text == "⬅️ Назад":
+            page = max(
+                0,
+                state["data"].get(
+                    "page",
+                    0
+                ) - 1
+            )
+
+            admin_show_participants_list(
+                user_id,
+                page
+            )
+            return
+
+    # --------------------------------------------------------
+    # ADMIN CREATE
+    # --------------------------------------------------------
+
+    if (
+        is_admin(user_id)
+        and state["state"] == "admin_create_date"
+    ):
+        if text == "⬅️ Отмена":
+            show_admin_menu(user_id)
+        else:
+            admin_create_training_date(
+                user_id,
+                text
+            )
+
+        return
+
+    if (
+        is_admin(user_id)
+        and state["state"] == "admin_create_start"
+    ):
+        if text == "⬅️ Отмена":
+            show_admin_menu(user_id)
+        else:
+            admin_create_training_start_time(
+                user_id,
+                text
+            )
+
+        return
+
+    if (
+        is_admin(user_id)
+        and state["state"] == "admin_create_end"
+    ):
+        if text == "⬅️ Отмена":
+            show_admin_menu(user_id)
+        else:
+            admin_create_training_end_time(
+                user_id,
+                text
+            )
+
+        return
+
+    if (
+        is_admin(user_id)
+        and state["state"] == "admin_create_title"
+    ):
+        if text == "⬅️ Отмена":
+            show_admin_menu(user_id)
+        else:
+            admin_create_training_title(
+                user_id,
+                text
+            )
+
+        return
+
+    if (
+        is_admin(user_id)
+        and state["state"] == "admin_create_category"
+    ):
+        if text == "⬅️ Отмена":
+            show_admin_menu(user_id)
+        else:
+            admin_create_training_category(
+                user_id,
+                text
+            )
+
+        return
+
+    if (
+        is_admin(user_id)
+        and state["state"] == "admin_create_capacity"
+    ):
+        if text == "⬅️ Отмена":
+            show_admin_menu(user_id)
+        else:
+            admin_create_training_capacity(
+                user_id,
+                text
+            )
+
+        return
+
+    if (
+        is_admin(user_id)
+        and state["state"] == "admin_create_price"
+    ):
+        if text == "⬅️ Отмена":
+            show_admin_menu(user_id)
+        else:
+            admin_create_training_price(
+                user_id,
+                text
+            )
+
+        return
+
+    if (
+        is_admin(user_id)
+        and state["state"] == "admin_create_age"
+    ):
+        if text == "⬅️ Отмена":
+            show_admin_menu(user_id)
+        else:
+            admin_create_training_age(
+                user_id,
+                text
+            )
+
+        return
+
+    if (
+        is_admin(user_id)
+        and state["state"] == "admin_create_level"
+    ):
+        if text == "⬅️ Отмена":
+            show_admin_menu(user_id)
+        else:
+            admin_create_training_level(
+                user_id,
+                text
+            )
+
+        return
+
+    if (
+        is_admin(user_id)
+        and state["state"] == "admin_create_coach"
+    ):
+        if text == "⬅️ Отмена":
+            show_admin_menu(user_id)
+        else:
+            admin_create_training_coach(
+                user_id,
+                text
+            )
+
+        return
+
+    if (
+        is_admin(user_id)
+        and state["state"] == "admin_create_confirm"
+    ):
+        if text == "✅ Создать":
+            admin_create_training_confirm(
+                user_id
+            )
+        else:
+            show_admin_menu(user_id)
+
+        return
+
+    # --------------------------------------------------------
+    # MAIN MENU
+    # --------------------------------------------------------
+
+    if text == "🏐 Записаться":
+        show_booking_categories(user_id)
+        return
+
+    if text == "📅 Расписание":
+        show_schedule_categories(user_id)
+        return
+
+    if text == "👤 Мои тренировки":
+        show_my_trainings(user_id)
+        return
+
+    if text == "💰 Цены":
+        show_prices(user_id)
+        return
+
+    if text == "📍 Где тренируемся":
+        show_location(user_id)
+        return
+
+    if text == "🎯 Индивидуальная тренировка":
+        show_individual(user_id)
+        return
+
+    if text == "❓ Задать вопрос":
+        show_question(user_id)
+        return
+
+    # --------------------------------------------------------
+    # ADMIN MENU
+    # --------------------------------------------------------
+
+    if is_admin(user_id):
+
+        if text == "📅 Расписание":
+            admin_show_schedule(user_id)
+            return
+
+        if text == "👥 Участники тренировок":
+            logger.info(
+                "ADMIN PARTICIPANTS BUTTON user=%s",
+                user_id
+            )
+
+            admin_show_participants_list(
+                user_id,
+                0
+            )
+
+            return
+
+        if text == "➕ Создать тренировку":
+            admin_create_training_start(
+                user_id
+            )
+            return
+
+    # --------------------------------------------------------
+    # SCHEDULE CATEGORY
+    # --------------------------------------------------------
+
+    if state["state"] == "schedule_category":
+
+        logger.info(
+            "STATE user=%s state=schedule_category data=%s",
+            user_id,
+            state["data"]
+        )
+
+        if text == "👧 Дети":
+            show_schedule(
+                user_id,
+                "children"
+            )
+            return
+
+        if text == "🧑 Взрослые":
+            show_schedule(
+                user_id,
+                "adults"
+            )
+            return
+
+        if text == "🏠 Все тренировки":
+            show_schedule(
+                user_id,
+                "all"
+            )
+            return
+
+        if text == "⬅️ Назад":
+            show_main_menu(user_id)
+            return
+
+    # --------------------------------------------------------
+    # BOOKING CATEGORY
+    # --------------------------------------------------------
+
+    if state["state"] == "booking_category":
+
+        if text == "👧 Дети":
+            show_booking_dates(
+                user_id,
+                "children"
+            )
+            return
+
+        if text == "🧑 Взрослые":
+            show_booking_dates(
+                user_id,
+                "adults"
+            )
+            return
+
+        if text == "🏠 Все тренировки":
+            show_booking_dates(
+                user_id,
+                "all"
+            )
+            return
+
+        if text == "⬅️ Назад":
+            show_main_menu(user_id)
+            return
+
+    # --------------------------------------------------------
+    # BOOKING DATE
+    # --------------------------------------------------------
+
+    if state["state"] == "booking_date":
+
+        if text == "⬅️ Назад":
+            show_booking_categories(
+                user_id
+            )
+            return
+
+        category = state["data"].get(
+            "category",
+            "all"
+        )
+
+        trainings = get_schedule_direct(
+            category,
+            SCHEDULE_DAYS
+        )
+
+        selected_date = None
+
+        for training in trainings:
+            try:
+                dt = datetime.strptime(
+                    training["training_date"],
+                    "%Y-%m-%d"
+                )
+
+                label = (
+                    f"{WEEKDAYS_SHORT[dt.weekday()]} "
+                    f"{dt.strftime('%d.%m')}"
+                )
+
+                if label == text:
+                    selected_date = (
+                        training["training_date"]
+                    )
+                    break
+
+            except Exception:
+                continue
+
+        if selected_date:
+            show_booking_trainings(
+                user_id,
+                category,
+                selected_date
+            )
+
+        return
+
+    # --------------------------------------------------------
+    # BOOKING TRAINING
+    # --------------------------------------------------------
+
+    if state["state"] == "booking_training":
+
+        if text == "⬅️ Назад":
+            show_booking_dates(
+                user_id,
+                state["data"].get(
+                    "category",
+                    "all"
+                )
+            )
+            return
+
+        training = find_training_from_button(
+            text
+        )
+
+        if training:
+            show_training_for_booking(
+                user_id,
+                training
+            )
+
+        return
+
+    # --------------------------------------------------------
+    # TRAINING ACTION
+    # --------------------------------------------------------
+
+    if state["state"] == "training_action":
+
+        training_id = state["data"].get(
+            "training_id"
+        )
+
+        training = get_training(
+            training_id
+        )
+
+        if not training:
+            show_main_menu(user_id)
+            return
+
+        if text == "⬅️ Назад":
+            show_main_menu(user_id)
+            return
+
+        if text == "✅ Записаться":
+            success, message = add_registration(
+                training_id,
+                user_id
+            )
+
+            send_message(
+                user_id,
+                (
+                    f"✅ {message}"
+                    if success
+                    else f"❌ {message}"
+                ),
+                {
+                    "one_time": False,
+                    "buttons": [
+                        [
+                            button(
+                                "👤 Мои тренировки",
+                                "primary"
+                            )
+                        ],
+                        [
+                            button(
+                                "🏠 Главное меню",
+                                "secondary"
+                            )
+                        ]
+                    ]
+                }
+            )
+
+            clear_state(user_id)
+            return
+
+        if text == "❌ Отменить запись":
+            success, message = cancel_registration(
+                training_id,
+                user_id
+            )
+
+            send_message(
+                user_id,
+                (
+                    f"✅ {message}"
+                    if success
+                    else f"❌ {message}"
+                ),
+                {
+                    "one_time": False,
+                    "buttons": [
+                        [
+                            button(
+                                "👤 Мои тренировки",
+                                "primary"
+                            )
+                        ],
+                        [
+                            button(
+                                "🏠 Главное меню",
+                                "secondary"
+                            )
+                        ]
+                    ]
+                }
+            )
+
+            clear_state(user_id)
+            return
+
+        return
+
+    # --------------------------------------------------------
+    # QUESTION
+    # --------------------------------------------------------
+
+    if state["state"] == "question":
+        if text == "⬅️ Главное меню":
+            show_main_menu(user_id)
+            return
+
+        send_message(
+            user_id,
+            "Спасибо! Ваш вопрос получен.\n"
+            "Администратор свяжется с вами.",
+            {
+                "one_time": False,
+                "buttons": [
+                    [
+                        button(
+                            "🏠 Главное меню",
+                            "secondary"
+                        )
+                    ]
+                ]
+            }
+        )
+
+        clear_state(user_id)
+        return
+
+    # --------------------------------------------------------
+    # ADMIN TRAINING NUMBER
+    # --------------------------------------------------------
+
+    if is_admin(user_id):
+        training = find_training_from_button(
+            text
+        )
+
+        if training:
+            admin_show_participants(
+                user_id,
+                training
+            )
+            return
+
+    # --------------------------------------------------------
+    # UNKNOWN
+    # --------------------------------------------------------
+
+    show_main_menu(user_id)
 
 
 # ============================================================
@@ -4477,86 +3454,33 @@ def startup():
 
     logger.info(
         "Group ID: %s",
-        GROUP_ID,
+        GROUP_ID
     )
 
     logger.info(
         "Admins: %s",
-        sorted(ADMINS),
+        list(ADMINS)
     )
-
-    # --------------------------------------------------------
-    # DATABASE
-    # --------------------------------------------------------
 
     init_db()
 
-    logger.info(
-        "Database initialized"
-    )
-
-    # --------------------------------------------------------
-    # TRAINING SCHEDULE
-    # --------------------------------------------------------
-
     ensure_schedule()
-
-    # --------------------------------------------------------
-    # FINAL DATABASE CHECK
-    # --------------------------------------------------------
-
-    try:
-        today = today_local()
-
-        end_date = (
-            today
-            + timedelta(days=14)
-        )
-
-        trainings = admin_db_trainings(
-            today.isoformat(),
-            end_date.isoformat(),
-        )
-
-        logger.info(
-            "Upcoming trainings in DB: %s",
-            len(trainings),
-        )
-
-        if trainings:
-            first = trainings[0]
-
-            logger.info(
-                "First upcoming training: "
-                "№%s %s %s",
-                training_number(first),
-                row_value(
-                    first,
-                    "training_date",
-                    "",
-                ),
-                row_value(
-                    first,
-                    "start_time",
-                    "",
-                ),
-            )
-
-    except Exception:
-        logger.exception(
-            "Failed final schedule check"
-        )
 
 
 # ============================================================
-# MAIN
+# RUN
 # ============================================================
 
 if __name__ == "__main__":
-
     startup()
 
     app.run(
         host="0.0.0.0",
-        port=PORT,
+        port=int(
+            os.getenv(
+                "PORT",
+                "10000"
+            )
+        ),
+        debug=False
     )

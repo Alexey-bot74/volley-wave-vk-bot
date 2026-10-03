@@ -1,74 +1,34 @@
 import os
+import json
 import sqlite3
-import logging
 import random
-from datetime import datetime, date, timedelta
+from datetime import datetime, timedelta
 
 import requests
 from flask import Flask, request
 
 
 # ============================================================
-# VOLLEY WAVE VK BOT
-# VERSION №6
+# CONFIG
 # ============================================================
 
-VERSION = "№6"
-
-VK_TOKEN = os.getenv("VK_TOKEN", "").strip()
-VK_CONFIRMATION_TOKEN = os.getenv(
-    "VK_CONFIRMATION_TOKEN",
-    "",
-).strip()
-VK_SECRET_KEY = os.getenv(
-    "VK_SECRET_KEY",
-    "",
-).strip()
+VK_TOKEN = os.getenv("VK_TOKEN", "")
+VK_SECRET_KEY = os.getenv("VK_SECRET_KEY", "")
+VK_CONFIRMATION_TOKEN = os.getenv("VK_CONFIRMATION_TOKEN", "")
 
 VK_API_VERSION = "5.199"
 
-GROUP_ID = 221776135
-
-DB_NAME = "volley_wave.db"
-
 ADMINS = {
-    87984447,
-    172892670,
-    148372158,
+    87984447,
+    172892670,
+    148372158,
 }
 
-ADMIN_CONTACT_ID = 87984447
+DB_FILE = "volley_wave.db"
 
 app = Flask(__name__)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-)
-
-
-# ============================================================
-# MEMORY STATE
-# ============================================================
-
-USER_STATES = {}
-
-
-# ============================================================
-# CONSTANTS
-# ============================================================
-
-BACK = "⬅️ Назад"
-
-WEEKDAYS_RU = [
-    "Понедельник",
-    "Вторник",
-    "Среда",
-    "Четверг",
-    "Пятница",
-    "Суббота",
-    "Воскресенье",
-]
+USER_STATE = {}
 
 
 # ============================================================
@@ -76,1602 +36,735 @@ WEEKDAYS_RU = [
 # ============================================================
 
 def get_db():
-    connection = sqlite3.connect(
-        DB_NAME,
-        timeout=30,
-    )
-    connection.row_factory = sqlite3.Row
-    return connection
-
-
-def init_db():
-    connection = get_db()
-
-    cursor = connection.cursor()
-
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            state TEXT DEFAULT 'main',
-            category TEXT,
-            created_at TEXT
-        )
-        """
-    )
-
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS trainings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            training_number INTEGER,
-            training_date TEXT,
-            weekday TEXT,
-            start_time TEXT,
-            end_time TEXT,
-            category TEXT,
-            format TEXT,
-            level TEXT,
-            capacity INTEGER,
-            price INTEGER,
-            location TEXT,
-            active INTEGER DEFAULT 1,
-            created_at TEXT
-        )
-        """
-    )
-
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS registrations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            training_id INTEGER,
-            user_id INTEGER,
-            created_at TEXT,
-            UNIQUE(training_id, user_id)
-        )
-        """
-    )
-
-    connection.commit()
-
-    migrate_database(connection)
-
-    connection.close()
-
-    logging.info(
-        "Database initialized"
-    )
-
-
-def migrate_database(connection):
-    cursor = connection.cursor()
-
-    cursor.execute(
-        "PRAGMA table_info(trainings)"
-    )
-
-    columns = {
-        row["name"]
-        for row in cursor.fetchall()
-    }
-
-    required_columns = {
-        "training_number": "INTEGER",
-        "weekday": "TEXT",
-        "active": "INTEGER DEFAULT 1",
-        "created_at": "TEXT",
-    }
-
-    for column, definition in required_columns.items():
-        if column not in columns:
-            cursor.execute(
-                f"""
-                ALTER TABLE trainings
-                ADD COLUMN {column} {definition}
-                """
-            )
-
-    connection.commit()
-
-    cursor.execute(
-        """
-        SELECT
-            id,
-            training_date,
-            category,
-            weekday,
-            active
-        FROM trainings
-        """
-    )
-
-    rows = cursor.fetchall()
-
-    for row in rows:
-        parsed_date = parse_date(
-            row["training_date"]
-        )
-
-        if parsed_date:
-            normalized_date = (
-                parsed_date.isoformat()
-            )
-
-            weekday = WEEKDAYS_RU[
-                parsed_date.weekday()
-            ]
-        else:
-            normalized_date = (
-                row["training_date"]
-            )
-            weekday = row["weekday"]
-
-        category = normalize_category(
-            row["category"]
-        )
-
-        active = (
-            1
-            if row["active"] is None
-            else row["active"]
-        )
-
-        cursor.execute(
-            """
-            UPDATE trainings
-            SET
-                training_date = ?,
-                weekday = ?,
-                category = ?,
-                active = ?
-            WHERE id = ?
-            """,
-            (
-                normalized_date,
-                weekday,
-                category,
-                active,
-                row["id"],
-            ),
-        )
-
-    cursor.execute(
-        """
-        SELECT
-            id,
-            training_number
-        FROM trainings
-        ORDER BY id
-        """
-    )
-
-    rows = cursor.fetchall()
-
-    next_number = 1
-
-    for row in rows:
-        if not row["training_number"]:
-            cursor.execute(
-                """
-                UPDATE trainings
-                SET training_number = ?
-                WHERE id = ?
-                """,
-                (
-                    next_number,
-                    row["id"],
-                ),
-            )
-
-        next_number += 1
-
-    connection.commit()
-
-
-# ============================================================
-# DATE / TIME HELPERS
-# ============================================================
-
-def parse_date(value):
-    if value is None:
-        return None
-
-    if isinstance(value, datetime):
-        return value.date()
-
-    if isinstance(value, date):
-        return value
-
-    value = str(value).strip()
-
-    if not value:
-        return None
-
-    formats = [
-        "%Y-%m-%d",
-        "%d.%m.%Y",
-        "%Y/%m/%d",
-        "%d/%m/%Y",
-        "%d-%m-%Y",
-    ]
-
-    for fmt in formats:
-        try:
-            return datetime.strptime(
-                value[:10],
-                fmt,
-            ).date()
-        except ValueError:
-            continue
-
-    try:
-        return datetime.fromisoformat(
-            value.replace("Z", "+00:00")
-        ).date()
-    except ValueError:
-        return None
-
-
-def parse_time(value):
-    if value is None:
-        return None
-
-    value = (
-        str(value)
-        .strip()
-        .replace(".", ":")
-    )
-
-    parts = value.split(":")
-
-    if len(parts) != 2:
-        return None
-
-    try:
-        hour = int(parts[0])
-        minute = int(parts[1])
-    except ValueError:
-        return None
-
-    if hour < 0 or hour > 23:
-        return None
-
-    if minute < 0 or minute > 59:
-        return None
-
-    return f"{hour:02d}:{minute:02d}"
-
-
-def time_to_minutes(value):
-    parsed = parse_time(value)
-
-    if not parsed:
-        return 0
-
-    hour, minute = map(
-        int,
-        parsed.split(":"),
-    )
-
-    return hour * 60 + minute
-
-
-# ============================================================
-# NORMALIZATION
-# ============================================================
-
-def normalize_category(value):
-    text = str(value or "").strip().lower()
-
-    if "дет" in text:
-        return "Детская"
-
-    if "взрос" in text:
-        return "Взрослая"
-
-    return str(value or "").strip()
-
-
-# ============================================================
-# PRICES
-# ============================================================
-
-def get_training_price(
-    category,
-    capacity,
-):
-    category = normalize_category(
-        category
-    )
-
-    try:
-        capacity = int(capacity)
-    except (ValueError, TypeError):
-        return None
-
-    if category == "Детская":
-        return 600
-
-    if category == "Взрослая":
-        if capacity < 4:
-            return None
-
-        if capacity >= 6:
-            return 1000
-
-        return 1200
-
-    return None
-
-
-# ============================================================
-# VK KEYBOARDS
-# ============================================================
-
-def text_button(
-    label,
-    color="secondary",
-):
-    return {
-        "action": {
-            "type": "text",
-            "label": str(label)[:40],
-        },
-        "color": color,
-    }
-
-
-def link_button(
-    label,
-    link,
-    color="primary",
-):
-    return {
-        "action": {
-            "type": "open_link",
-            "link": link,
-            "label": str(label)[:40],
-        },
-        "color": color,
-    }
-
-
-def make_keyboard(
-    rows,
-    inline=False,
-):
-    return {
-        "one_time": False,
-        "inline": inline,
-        "buttons": rows,
-    }
-
-
-def main_keyboard(user_id):
-    rows = [
-        [
-            text_button(
-                "📅 Расписание",
-                "primary",
-            )
-        ],
-        [
-            text_button(
-                "📝 Записаться",
-                "primary",
-            )
-        ],
-        [
-            text_button(
-                "💰 Цены",
-            )
-        ],
-        [
-            text_button(
-                "🏐 Индивидуальная тренировка",
-            )
-        ],
-    ]
-
-    if user_id in ADMINS:
-        rows.append(
-            [
-                text_button(
-                    "⚙️ Админ-панель",
-                )
-            ]
-        )
-
-    return make_keyboard(rows)
-
-
-def back_keyboard():
-    return make_keyboard(
-        [
-            [
-                text_button(BACK)
-            ]
-        ]
-    )
-
-
-def category_keyboard():
-    return make_keyboard(
-        [
-            [
-                text_button("👧 Детские")
-            ],
-            [
-                text_button("🧑 Взрослые")
-            ],
-            [
-                text_button(BACK)
-            ],
-        ]
-    )
-
-
-def admin_keyboard():
-    return make_keyboard(
-        [
-            [
-                text_button(
-                    "➕ Создать тренировку",
-                    "primary",
-                )
-            ],
-            [
-                text_button(
-                    "📋 Все тренировки"
-                )
-            ],
-            [
-                text_button(
-                    "👥 Записи"
-                )
-            ],
-            [
-                text_button(BACK)
-            ],
-        ]
-    )
-
-
-def create_category_keyboard():
-    return make_keyboard(
-        [
-            [
-                text_button(
-                    "👧 Детская"
-                )
-            ],
-            [
-                text_button(
-                    "🧑 Взрослая"
-                )
-            ],
-            [
-                text_button(BACK)
-            ],
-        ]
-    )
-
-
-def format_keyboard():
-    return make_keyboard(
-        [
-            [
-                text_button("Техничка")
-            ],
-            [
-                text_button("MIXED")
-            ],
-            [
-                text_button("Женская")
-            ],
-            [
-                text_button("Мужская")
-            ],
-            [
-                text_button("Общая")
-            ],
-            [
-                text_button(BACK)
-            ],
-        ]
-    )
-
-
-def level_keyboard():
-    return make_keyboard(
-        [
-            [
-                text_button(
-                    "Начинающие"
-                )
-            ],
-            [
-                text_button(
-                    "Средний"
-                )
-            ],
-            [
-                text_button(
-                    "Продвинутый"
-                )
-            ],
-            [
-                text_button(
-                    "Любой уровень"
-                )
-            ],
-            [
-                text_button(BACK)
-            ],
-        ]
-    )
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_database():
+    conn = get_db()
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            vk_id INTEGER UNIQUE,
+            first_name TEXT,
+            last_name TEXT,
+            created_at TEXT
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS trainings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            training_number INTEGER,
+            training_date TEXT,
+            weekday TEXT,
+            start_time TEXT,
+            end_time TEXT,
+            title TEXT,
+            category TEXT,
+            age_group TEXT,
+            level TEXT,
+            format TEXT,
+            coach TEXT,
+            capacity INTEGER DEFAULT 20,
+            price INTEGER DEFAULT 0,
+            location TEXT,
+            status TEXT DEFAULT 'active',
+            template_id INTEGER,
+            created_at TEXT,
+            updated_at TEXT
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS registrations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            training_id INTEGER,
+            user_id INTEGER,
+            created_at TEXT,
+            UNIQUE(training_id, user_id)
+        )
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+init_database()
 
 
 # ============================================================
 # VK API
 # ============================================================
 
-def vk_send(
-    user_id,
-    message,
-    keyboard=None,
-):
-    if not VK_TOKEN:
-        logging.error(
-            "VK_TOKEN is empty"
-        )
-        return False
+def vk_api(method, **params):
+    params["access_token"] = VK_TOKEN
+    params["v"] = VK_API_VERSION
 
-    params = {
-        "access_token": VK_TOKEN,
-        "v": VK_API_VERSION,
-        "user_id": int(user_id),
-        "random_id": random.randint(
-            1,
-            2147483646,
-        ),
-        "message": str(message),
-    }
+    try:
+        response = requests.post(
+            f"https://api.vk.com/method/{method}",
+            data=params,
+            timeout=15
+        )
 
-    if keyboard is not None:
-        params["keyboard"] = keyboard
+        data = response.json()
 
-    try:
-        response = requests.post(
-            "https://api.vk.com/method/messages.send",
-            data=params,
-            timeout=15,
-        )
+        if "error" in data:
+            print("VK API ERROR:", data["error"], flush=True)
 
-        result = response.json()
+        return data
 
-        logging.info(
-            "VK SEND user=%s result=%s",
-            user_id,
-            result,
-        )
+    except Exception as error:
+        print("VK API REQUEST ERROR:", repr(error), flush=True)
+        return None
 
-        if "error" in result:
-            logging.error(
-                "VK API error: %s",
-                result["error"],
-            )
-            return False
 
-        return True
+def send_message(user_id, message, keyboard=None):
+    params = {
+        "user_id": user_id,
+        "random_id": random.randint(1, 2_000_000_000),
+        "message": message,
+    }
 
-    except Exception:
-        logging.exception(
-            "VK SEND exception"
-        )
-        return False
+    if keyboard is not None:
+        params["keyboard"] = json.dumps(
+            keyboard,
+            ensure_ascii=False,
+            separators=(",", ":")
+        )
+
+    return vk_api("messages.send", **params)
 
 
 # ============================================================
-# USER STATE
+# KEYBOARDS
 # ============================================================
 
-def set_state(
-    user_id,
-    state,
-    **data,
-):
-    current = {
-        "state": state,
-        **data,
-    }
-
-    USER_STATES[int(user_id)] = current
-
-    connection = get_db()
-
-    connection.execute(
-        """
-        INSERT INTO users(
-            user_id,
-            state,
-            category,
-            created_at
-        )
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(user_id)
-        DO UPDATE SET
-            state = excluded.state,
-            category = COALESCE(
-                excluded.category,
-                users.category
-            )
-        """,
-        (
-            int(user_id),
-            state,
-            data.get("category"),
-            datetime.now().isoformat(),
-        ),
-    )
-
-    connection.commit()
-    connection.close()
+def button(text, color="secondary"):
+    return {
+        "action": {
+            "type": "text",
+            "label": text,
+        },
+        "color": color,
+    }
 
 
-def clear_state(user_id):
-    USER_STATES.pop(
-        int(user_id),
-        None,
-    )
+def main_keyboard(user_id):
+    rows = [
+        [
+            button("📅 Расписание на неделю", "primary")
+        ],
+        [
+            button("📝 Записаться", "positive")
+        ],
+        [
+            button("📋 Мои тренировки", "secondary")
+        ],
+        [
+            button("❌ Отмена тренировки", "negative")
+        ],
+    ]
 
-    connection = get_db()
+    if user_id in ADMINS:
+        rows.append([
+            button("⚙️ Админ-панель", "secondary")
+        ])
 
-    connection.execute(
-        """
-        INSERT INTO users(
-            user_id,
-            state,
-            created_at
-        )
-        VALUES (?, 'main', ?)
-        ON CONFLICT(user_id)
-        DO UPDATE SET
-            state = 'main'
-        """,
-        (
-            int(user_id),
-            datetime.now().isoformat(),
-        ),
-    )
+    return {
+        "one_time": False,
+        "inline": False,
+        "buttons": rows,
+    }
 
-    connection.commit()
-    connection.close()
+
+def admin_keyboard():
+    return {
+        "one_time": False,
+        "inline": False,
+        "buttons": [
+            [
+                button("📋 Расписание с учениками", "primary")
+            ],
+            [
+                button("➕ Создать тренировку", "positive")
+            ],
+            [
+                button("🗑 Удалить тренировку", "negative")
+            ],
+            [
+                button("⬅️ Главное меню", "secondary")
+            ],
+        ],
+    }
+
+
+def back_keyboard():
+    return {
+        "one_time": False,
+        "inline": False,
+        "buttons": [
+            [
+                button("⬅️ Назад", "secondary")
+            ]
+        ],
+    }
+
+
+# ============================================================
+# STATE
+# ============================================================
+
+def set_state(user_id, state):
+    USER_STATE[user_id] = state
 
 
 def get_state(user_id):
-    user_id = int(user_id)
-
-    if user_id in USER_STATES:
-        return USER_STATES[user_id]
-
-    connection = get_db()
-
-    row = connection.execute(
-        """
-        SELECT
-            state,
-            category
-        FROM users
-        WHERE user_id = ?
-        """,
-        (user_id,),
-    ).fetchone()
-
-    connection.close()
-
-    if row:
-        result = {
-            "state": row["state"] or "main",
-        }
-
-        if row["category"]:
-            result["category"] = (
-                row["category"]
-            )
-
-    else:
-        result = {
-            "state": "main"
-        }
-
-    USER_STATES[user_id] = result
-
-    return result
+    return USER_STATE.get(user_id, "main")
 
 
-def save_user_category(
-    user_id,
-    category,
-):
-    connection = get_db()
+def clear_state(user_id):
+    USER_STATE.pop(user_id, None)
 
-    connection.execute(
-        """
-        INSERT INTO users(
-            user_id,
-            state,
-            category,
-            created_at
-        )
-        VALUES (?, 'main', ?, ?)
-        ON CONFLICT(user_id)
-        DO UPDATE SET
-            category = excluded.category
-        """,
-        (
-            int(user_id),
-            normalize_category(category),
-            datetime.now().isoformat(),
-        ),
-    )
 
-    connection.commit()
-    connection.close()
+# ============================================================
+# USERS
+# ============================================================
+
+def ensure_user(user_id):
+    conn = get_db()
+
+    row = conn.execute(
+        "SELECT id FROM users WHERE vk_id=?",
+        (user_id,)
+    ).fetchone()
+
+    if row is None:
+        conn.execute("""
+            INSERT INTO users (
+                vk_id,
+                created_at
+            )
+            VALUES (?, ?)
+        """, (
+            user_id,
+            datetime.now().isoformat()
+        ))
+
+        conn.commit()
+
+    conn.close()
+
+
+def get_internal_user_id(user_id):
+    ensure_user(user_id)
+
+    conn = get_db()
+
+    row = conn.execute(
+        "SELECT id FROM users WHERE vk_id=?",
+        (user_id,)
+    ).fetchone()
+
+    conn.close()
+
+    if row:
+        return row["id"]
+
+    return None
+
+
+# ============================================================
+# DATES
+# ============================================================
+
+WEEKDAYS = [
+    "Пн",
+    "Вт",
+    "Ср",
+    "Чт",
+    "Пт",
+    "Сб",
+    "Вс",
+]
+
+
+def parse_date(value):
+    if not value:
+        return None
+
+    value = str(value).strip()
+
+    formats = [
+        "%d.%m.%Y",
+        "%Y-%m-%d",
+        "%d.%m.%y",
+    ]
+
+    for fmt in formats:
+        try:
+            return datetime.strptime(value, fmt).date()
+        except ValueError:
+            pass
+
+    return None
+
+
+def format_date(value):
+    parsed = parse_date(value)
+
+    if not parsed:
+        return str(value)
+
+    return (
+        f"{WEEKDAYS[parsed.weekday()]} "
+        f"{parsed.strftime('%d.%m')}"
+    )
 
 
 # ============================================================
 # TRAININGS
 # ============================================================
 
-def next_training_number(
-    connection,
-):
-    row = connection.execute(
-        """
-        SELECT
-            COALESCE(
-                MAX(training_number),
-                0
-            ) + 1 AS number
-        FROM trainings
-        """
-    ).fetchone()
+def get_week_trainings():
+    today = datetime.now().date()
+    end_date = today + timedelta(days=6)
 
-    return int(row["number"])
+    conn = get_db()
+
+    rows = conn.execute("""
+        SELECT *
+        FROM trainings
+        WHERE status='active'
+          AND category='adults'
+    """).fetchall()
+
+    conn.close()
+
+    result = []
+
+    for row in rows:
+        parsed = parse_date(row["training_date"])
+
+        if not parsed:
+            continue
+
+        if today <= parsed <= end_date:
+            result.append(row)
+
+    result.sort(
+        key=lambda row: (
+            parse_date(row["training_date"]),
+            row["start_time"] or ""
+        )
+    )
+
+    return result
+
+
+def get_future_trainings():
+    today = datetime.now().date()
+
+    conn = get_db()
+
+    rows = conn.execute("""
+        SELECT *
+        FROM trainings
+        WHERE status='active'
+          AND category='adults'
+    """).fetchall()
+
+    conn.close()
+
+    result = []
+
+    for row in rows:
+        parsed = parse_date(row["training_date"])
+
+        if parsed and parsed >= today:
+            result.append(row)
+
+    result.sort(
+        key=lambda row: (
+            parse_date(row["training_date"]),
+            row["start_time"] or ""
+        )
+    )
+
+    return result
 
 
 def get_training(training_id):
-    if not training_id:
-        return None
+    conn = get_db()
 
-    connection = get_db()
+    row = conn.execute("""
+        SELECT *
+        FROM trainings
+        WHERE id=?
+          AND status='active'
+    """, (training_id,)).fetchone()
 
-    row = connection.execute(
-        """
-        SELECT *
-        FROM trainings
-        WHERE id = ?
-        """,
-        (int(training_id),),
-    ).fetchone()
+    conn.close()
 
-    connection.close()
-
-    return row
+    return row
 
 
-def registered_count(
-    training_id,
-):
-    connection = get_db()
+def training_text(row):
+    time_text = row["start_time"] or ""
 
-    row = connection.execute(
-        """
-        SELECT COUNT(*) AS count
-        FROM registrations
-        WHERE training_id = ?
-        """,
-        (int(training_id),),
-    ).fetchone()
+    if row["end_time"]:
+        time_text += f"-{row['end_time']}"
 
-    connection.close()
-
-    return int(row["count"])
+    return (
+        f"#{row['id']}  "
+        f"{format_date(row['training_date'])} "
+        f"{time_text}\n"
+        f"Формат: {row['format'] or '—'}\n"
+        f"Уровень: {row['level'] or '—'}\n"
+        f"Цена: {row['price'] or 0} ₽\n"
+        f"Тренер: {row['coach'] or '—'}"
+    )
 
 
-def free_places(
-    training_id,
-):
-    training = get_training(
-        training_id
-    )
+def training_short_text(row):
+    time_text = row["start_time"] or ""
 
-    if not training:
-        return 0
+    if row["end_time"]:
+        time_text += f"-{row['end_time']}"
 
-    return max(
-        int(training["capacity"])
-        - registered_count(training_id),
-        0,
-    )
-
-
-def get_future_trainings(
-    category=None,
-):
-    """
-    КРИТИЧЕСКИ ВАЖНО:
-
-    Здесь НЕ используется SQL:
-        training_date >= ?
-
-    Потому что в старой базе даты могли
-    храниться в разных форматах.
-
-    Мы получаем все активные тренировки,
-    преобразуем дату Python-ом и только
-    потом фильтруем.
-
-    Именно это исправляет ситуацию,
-    когда расписание есть в БД,
-    но бот пишет, что его нет.
-    """
-
-    today = date.today()
-
-    connection = get_db()
-
-    rows = connection.execute(
-        """
-        SELECT *
-        FROM trainings
-        WHERE COALESCE(active, 1) = 1
-        """
-    ).fetchall()
-
-    connection.close()
-
-    result = []
-
-    wanted_category = None
-
-    if category:
-        wanted_category = normalize_category(
-            category
-        )
-
-    for row in rows:
-        parsed_date = parse_date(
-            row["training_date"]
-        )
-
-        if not parsed_date:
-            logging.error(
-                "BAD TRAINING DATE "
-                "id=%s date=%r",
-                row["id"],
-                row["training_date"],
-            )
-            continue
-
-        if parsed_date < today:
-            continue
-
-        row_category = normalize_category(
-            row["category"]
-        )
-
-        if (
-            wanted_category
-            and row_category != wanted_category
-        ):
-            continue
-
-        start_time = (
-            parse_time(
-                row["start_time"]
-            )
-            or str(row["start_time"])
-        )
-
-        end_time = (
-            parse_time(
-                row["end_time"]
-            )
-            or str(row["end_time"])
-        )
-
-        result.append(
-            {
-                "id": row["id"],
-                "training_number": (
-                    row["training_number"]
-                    or row["id"]
-                ),
-                "training_date": parsed_date,
-                "weekday": WEEKDAYS_RU[
-                    parsed_date.weekday()
-                ],
-                "start_time": start_time,
-                "end_time": end_time,
-                "category": row_category,
-                "format": row["format"] or "—",
-                "level": row["level"] or "—",
-                "capacity": int(
-                    row["capacity"] or 0
-                ),
-                "price": int(
-                    row["price"] or 0
-                ),
-                "location": (
-                    row["location"]
-                    or "—"
-                ),
-            }
-        )
-
-    result.sort(
-        key=lambda item: (
-            item["training_date"],
-            time_to_minutes(
-                item["start_time"]
-            ),
-            item["id"],
-        )
-    )
-
-    logging.info(
-        "TRAININGS FOUND category=%r count=%s",
-        category,
-        len(result),
-    )
-
-    return result
-
-
-def training_text(
-    training,
-):
-    if isinstance(
-        training,
-        sqlite3.Row,
-    ):
-        training_id = training["id"]
-
-        training_date = parse_date(
-            training["training_date"]
-        )
-
-        number = (
-            training["training_number"]
-            or training_id
-        )
-
-        start_time = (
-            parse_time(
-                training["start_time"]
-            )
-            or str(training["start_time"])
-        )
-
-        end_time = (
-            parse_time(
-                training["end_time"]
-            )
-            or str(training["end_time"])
-        )
-
-        training_format = (
-            training["format"]
-            or "—"
-        )
-
-        level = (
-            training["level"]
-            or "—"
-        )
-
-        capacity = int(
-            training["capacity"] or 0
-        )
-
-        price = int(
-            training["price"] or 0
-        )
-
-        location = (
-            training["location"]
-            or "—"
-        )
-
-    else:
-        training_id = training["id"]
-
-        training_date = training[
-            "training_date"
-        ]
-
-        number = training[
-            "training_number"
-        ]
-
-        start_time = training[
-            "start_time"
-        ]
-
-        end_time = training[
-            "end_time"
-        ]
-
-        training_format = training[
-            "format"
-        ]
-
-        level = training[
-            "level"
-        ]
-
-        capacity = int(
-            training["capacity"]
-        )
-
-        price = int(
-            training["price"]
-        )
-
-        location = training[
-            "location"
-        ]
-
-    if training_date:
-        date_text = training_date.strftime(
-            "%d.%m.%Y"
-        )
-
-        weekday = WEEKDAYS_RU[
-            training_date.weekday()
-        ]
-    else:
-        date_text = "—"
-        weekday = "—"
-
-    free = free_places(
-        training_id
-    )
-
-    return (
-        f"🏐 Тренировка №{number}\n\n"
-        f"📅 Дата: {date_text}\n"
-        f"🗓 День: {weekday}\n"
-        f"🕐 Время: "
-        f"{start_time}–{end_time}\n"
-        f"🏐 Формат: {training_format}\n"
-        f"📊 Уровень: {level}\n"
-        f"👥 Мест: {capacity}\n"
-        f"💳 Стоимость: {price} ₽\n"
-        f"📍 Место: {location}\n"
-        f"🟢 Свободно: {free}"
-    )
+    return (
+        f"#{row['id']} — "
+        f"{format_date(row['training_date'])} "
+        f"{time_text}\n"
+        f"{row['format'] or '—'}, "
+        f"{row['level'] or '—'}"
+    )
 
 
 # ============================================================
-# MAIN MENU
+# REGISTRATIONS
+# ============================================================
+
+def is_registered(user_id, training_id):
+    internal_id = get_internal_user_id(user_id)
+
+    conn = get_db()
+
+    row = conn.execute("""
+        SELECT id
+        FROM registrations
+        WHERE training_id=?
+          AND user_id=?
+    """, (
+        training_id,
+        internal_id
+    )).fetchone()
+
+    conn.close()
+
+    return row is not None
+
+
+def register_user(user_id, training_id):
+    internal_id = get_internal_user_id(user_id)
+
+    conn = get_db()
+
+    training = conn.execute("""
+        SELECT *
+        FROM trainings
+        WHERE id=?
+          AND status='active'
+    """, (training_id,)).fetchone()
+
+    if not training:
+        conn.close()
+        return "not_found"
+
+    existing = conn.execute("""
+        SELECT id
+        FROM registrations
+        WHERE training_id=?
+          AND user_id=?
+    """, (
+        training_id,
+        internal_id
+    )).fetchone()
+
+    if existing:
+        conn.close()
+        return "already"
+
+    capacity = training["capacity"] or 20
+
+    count = conn.execute("""
+        SELECT COUNT(*)
+        FROM registrations
+        WHERE training_id=?
+    """, (training_id,)).fetchone()[0]
+
+    if count >= capacity:
+        conn.close()
+        return "full"
+
+    try:
+        conn.execute("""
+            INSERT INTO registrations (
+                training_id,
+                user_id,
+                created_at
+            )
+            VALUES (?, ?, ?)
+        """, (
+            training_id,
+            internal_id,
+            datetime.now().isoformat()
+        ))
+
+        conn.commit()
+        conn.close()
+
+        return "ok"
+
+    except sqlite3.IntegrityError:
+        conn.close()
+        return "already"
+
+
+def cancel_registration(user_id, training_id):
+    internal_id = get_internal_user_id(user_id)
+
+    conn = get_db()
+
+    result = conn.execute("""
+        DELETE FROM registrations
+        WHERE training_id=?
+          AND user_id=?
+    """, (
+        training_id,
+        internal_id
+    ))
+
+    conn.commit()
+    conn.close()
+
+    return result.rowcount > 0
+
+
+def get_user_trainings(user_id):
+    internal_id = get_internal_user_id(user_id)
+
+    conn = get_db()
+
+    rows = conn.execute("""
+        SELECT t.*
+        FROM trainings t
+        JOIN registrations r
+          ON r.training_id=t.id
+        WHERE r.user_id=?
+          AND t.status='active'
+        ORDER BY t.training_date, t.start_time
+    """, (internal_id,)).fetchall()
+
+    conn.close()
+
+    return rows
+
+
+# ============================================================
+# USER MENU
 # ============================================================
 
 def show_main(user_id):
-    clear_state(user_id)
-
-    vk_send(
-        user_id,
-        "🏐 VOLLEY WAVE\n\n"
-        "Выберите действие:",
-        main_keyboard(user_id),
-    )
-
-
-# ============================================================
-# PRICES
-# ============================================================
-
-def show_prices(user_id):
-    set_state(
-        user_id,
-        "prices",
-    )
-
-    vk_send(
-        user_id,
-        "💰 Цены\n\n"
-        "👧 Детские — 600 ₽.\n\n"
-        "🧑 Взрослые:\n"
-        "• минимальный набор — 4 человека;\n"
-        "• 4–5 человек — 1200 ₽ с человека;\n"
-        "• от 6 человек — 1000 ₽ с человека.",
-        back_keyboard(),
-    )
-
-
-# ============================================================
-# INDIVIDUAL TRAINING
-# ============================================================
-
-def show_individual(user_id):
-    set_state(
-        user_id,
-        "individual",
-    )
-
-    admin_link = (
-        f"https://vk.com/id{ADMIN_CONTACT_ID}"
-    )
-
-    vk_send(
-        user_id,
-        "🏐 Индивидуальная тренировка\n\n"
-        "Чтобы договориться об "
-        "индивидуальной тренировке, "
-        "напишите администратору.",
-        make_keyboard(
-            [
-                [
-                    link_button(
-                        "✉️ Написать администратору",
-                        admin_link,
-                        "primary",
-                    )
-                ],
-                [
-                    text_button(BACK)
-                ],
-            ]
-        ),
-    )
-
-
-# ============================================================
-# SCHEDULE
-# ============================================================
-
-def show_schedule_menu(user_id):
-    set_state(
-        user_id,
-        "schedule_category",
-    )
-
-    vk_send(
-        user_id,
-        "📅 Расписание\n\n"
-        "Выберите направление:",
-        category_keyboard(),
-    )
-
-
-def show_schedule(
-    user_id,
-    category,
-):
-    category = normalize_category(
-        category
-    )
-
-    trainings = get_future_trainings(
-        category
-    )
-
-    logging.info(
-        "SHOW SCHEDULE "
-        "user=%s category=%s count=%s",
-        user_id,
-        category,
-        len(trainings),
-    )
-
-    if not trainings:
-        vk_send(
-            user_id,
-            "📅 Расписание\n\n"
-            f"{category}\n\n"
-            "Пока тренировок нет.",
-            back_keyboard(),
-        )
-        return
-
-    message_parts = [
-        "📅 Расписание",
-        "",
-        category,
-        "",
-    ]
-
-    for training in trainings:
-        message_parts.append(
-            training_text(training)
-        )
-        message_parts.append(
-            "\n────────────\n"
-        )
-
-    vk_send(
-        user_id,
-        "\n".join(
-            message_parts
-        ).strip(),
-        back_keyboard(),
-    )
-
-
-# ============================================================
-# BOOKING
-# ============================================================
-
-def show_booking_menu(user_id):
-    set_state(
-        user_id,
-        "booking_category",
-    )
-
-    vk_send(
-        user_id,
-        "📝 Запись на тренировку\n\n"
-        "Выберите направление:",
-        category_keyboard(),
-    )
-
-
-def show_booking_dates(
-    user_id,
-    category,
-):
-    category = normalize_category(
-        category
-    )
-
-    trainings = get_future_trainings(
-        category
-    )
-
-    if not trainings:
-        vk_send(
-            user_id,
-            "📝 Запись\n\n"
-            "Подходящих тренировок "
-            "пока нет.",
-            back_keyboard(),
-        )
-        return
-
-    dates = []
-
-    for training in trainings:
-        current_date = training[
-            "training_date"
-        ]
-
-        if current_date not in dates:
-            dates.append(
-                current_date
-            )
-
-    rows = []
-
-    for current_date in dates:
-        rows.append(
-            [
-                text_button(
-                    current_date.strftime(
-                        "%d.%m.%Y"
-                    )
-                    + " — "
-                    + WEEKDAYS_RU[
-                        current_date.weekday()
-                    ]
-                )
-            ]
-        )
-
-    rows.append(
-        [
-            text_button(BACK)
-        ]
-    )
-
-    set_state(
-        user_id,
-        "booking_date",
-        category=category,
-    )
-
-    vk_send(
-        user_id,
-        "📅 Выберите дату:",
-        make_keyboard(rows),
-    )
-
-
-def show_booking_trainings(
-    user_id,
-    category,
-    selected_date,
-):
-    parsed_date = parse_date(
-        selected_date
-    )
-
-    if not parsed_date:
-        show_booking_dates(
-            user_id,
-            category,
-        )
-        return
-
-    trainings = [
-        training
-        for training in get_future_trainings(
-            category
-        )
-        if training["training_date"]
-        == parsed_date
-    ]
-
-    if not trainings:
-        vk_send(
-            user_id,
-            "На эту дату тренировок "
-            "нет.",
-            back_keyboard(),
-        )
-        return
-
-    rows = []
-
-    for training in trainings:
-        free = free_places(
-            training["id"]
-        )
-
-        if free > 0:
-            label = (
-                f"№{training['training_number']} "
-                f"{training['start_time']}-"
-                f"{training['end_time']} "
-                f"({free} мест)"
-            )
-        else:
-            label = (
-                f"№{training['training_number']} "
-                f"{training['start_time']}-"
-                f"{training['end_time']} "
-                "(НЕТ МЕСТ)"
-            )
-
-        rows.append(
-            [
-                text_button(label)
-            ]
-        )
-
-    rows.append(
-        [
-            text_button(BACK)
-        ]
-    )
-
-    set_state(
-        user_id,
-        "booking_training",
-        category=normalize_category(
-            category
-        ),
-        selected_date=parsed_date.isoformat(),
-    )
-
-    vk_send(
-        user_id,
-        "🏐 Выберите тренировку:",
-        make_keyboard(rows),
-    )
-
-
-def find_training_from_button(
-    category,
-    selected_date,
-    text,
-):
-    parsed_date = parse_date(
-        selected_date
-    )
-
-    if not parsed_date:
-        return None
-
-    trainings = [
-        training
-        for training in get_future_trainings(
-            category
-        )
-        if training["training_date"]
-        == parsed_date
-    ]
-
-    for training in trainings:
-        prefix = (
-            f"№{training['training_number']} "
-        )
-
-        if text.startswith(prefix):
-            return training
-
-    return None
-
-
-def show_booking_confirmation(
-    user_id,
-    training,
-):
-    set_state(
-        user_id,
-        "booking_confirm",
-        training_id=training["id"],
-    )
-
-    if free_places(
-        training["id"]
-    ) <= 0:
-        vk_send(
-            user_id,
-            "❌ На тренировке "
-            "нет свободных мест.",
-            back_keyboard(),
-        )
-        return
-
-    vk_send(
-        user_id,
-        training_text(training)
-        + "\n\n"
-        + "Записаться?",
-        make_keyboard(
-            [
-                [
-                    text_button(
-                        "✅ Записаться",
-                        "primary",
-                    )
-                ],
-                [
-                    text_button(BACK)
-                ],
-            ]
-        ),
-    )
-
-
-def register_user(
-    user_id,
-    training_id,
-):
-    training = get_training(
-        training_id
-    )
-
-    if not training:
-        return (
-            False,
-            "Тренировка не найдена."
-        )
-
-    if not training["active"]:
-        return (
-            False,
-            "Тренировка закрыта."
-        )
-
-    if free_places(
-        training_id
-    ) <= 0:
-        return (
-            False,
-            "Свободных мест больше нет."
-        )
-
-    connection = get_db()
-
-    try:
-        connection.execute(
-            """
-            INSERT INTO registrations(
-                training_id,
-                user_id,
-                created_at
-            )
-            VALUES (?, ?, ?)
-            """,
-            (
-                int(training_id),
-                int(user_id),
-                datetime.now().isoformat(),
-            ),
-        )
-
-        connection.commit()
-
-    except sqlite3.IntegrityError:
-        connection.close()
-
-        return (
-            False,
-            "Вы уже записаны "
-            "на эту тренировку."
-        )
-
-    except Exception:
-        connection.rollback()
-        connection.close()
-
-        logging.exception(
-            "Registration error"
-        )
-
-        return (
-            False,
-            "Не удалось записать вас. "
-            "Попробуйте ещё раз."
-        )
-
-    connection.close()
-
-    return True, "ok"
-
-
-def notify_admins(
-    user_id,
-    training_id,
-):
-    training = get_training(
-        training_id
-    )
-
-    if not training:
-        return
-
-    count = registered_count(
-        training_id
-    )
-
-    training_date = parse_date(
-        training["training_date"]
-    )
-
-    date_text = (
-        training_date.strftime(
-            "%d.%m.%Y"
-        )
-        if training_date
-        else str(
-            training["training_date"]
-        )
-    )
-
-    message = (
-        "📝 Новая запись!\n\n"
-        f"Пользователь: id{user_id}\n"
-        f"Тренировка №"
-        f"{training['training_number'] or training['id']}\n"
-        f"Дата: {date_text}\n"
-        f"Время: "
-        f"{training['start_time']}-"
-        f"{training['end_time']}\n"
-        f"Участников: "
-        f"{count}/{training['capacity']}"
-    )
-
-    for admin_id in ADMINS:
-        vk_send(
-            admin_id,
-            message,
-        )
+    clear_state(user_id)
+
+    send_message(
+        user_id,
+        "Главное меню:",
+        main_keyboard(user_id)
+    )
+
+
+def show_schedule(user_id):
+    rows = get_week_trainings()
+
+    if not rows:
+        text = "📅 На ближайшие 7 дней тренировок пока нет."
+    else:
+        parts = ["📅 Расписание на неделю:\n"]
+
+        for row in rows:
+            parts.append(training_text(row))
+
+        text = "\n\n".join(parts)
+
+    send_message(
+        user_id,
+        text,
+        main_keyboard(user_id)
+    )
+
+
+def start_booking(user_id):
+    rows = get_week_trainings()
+
+    if not rows:
+        send_message(
+            user_id,
+            "На ближайшие 7 дней тренировок нет.",
+            main_keyboard(user_id)
+        )
+        return
+
+    parts = ["📝 Выбери тренировку:\n"]
+
+    for row in rows:
+        parts.append(training_short_text(row))
+
+    parts.append("\nНапиши номер тренировки.")
+
+    set_state(user_id, "booking")
+
+    send_message(
+        user_id,
+        "\n\n".join(parts),
+        back_keyboard()
+    )
+
+
+def booking(user_id, text):
+    try:
+        training_id = int(text.strip())
+    except ValueError:
+        send_message(
+            user_id,
+            "Напиши только номер тренировки."
+        )
+        return
+
+    training = get_training(training_id)
+
+    if not training:
+        send_message(
+            user_id,
+            "Такой тренировки нет."
+        )
+        return
+
+    result = register_user(user_id, training_id)
+
+    if result == "already":
+        send_message(
+            user_id,
+            "Ты уже записан на эту тренировку.",
+            main_keyboard(user_id)
+        )
+        clear_state(user_id)
+        return
+
+    if result == "full":
+        send_message(
+            user_id,
+            "На тренировке уже нет свободных мест.",
+            main_keyboard(user_id)
+        )
+        clear_state(user_id)
+        return
+
+    if result != "ok":
+        send_message(
+            user_id,
+            "Не удалось записаться. Попробуй ещё раз.",
+            main_keyboard(user_id)
+        )
+        clear_state(user_id)
+        return
+
+    clear_state(user_id)
+
+    send_message(
+        user_id,
+        "✅ Ты записан:\n\n" + training_text(training),
+        main_keyboard(user_id)
+    )
+
+
+def show_my_trainings(user_id):
+    rows = get_user_trainings(user_id)
+
+    if not rows:
+        send_message(
+            user_id,
+            "📋 У тебя пока нет записей.",
+            main_keyboard(user_id)
+        )
+        return
+
+    parts = ["📋 Мои тренировки:\n"]
+
+    for row in rows:
+        parts.append(training_text(row))
+
+    send_message(
+        user_id,
+        "\n\n".join(parts),
+        main_keyboard(user_id)
+    )
+
+
+def start_cancel(user_id):
+    rows = get_user_trainings(user_id)
+
+    if not rows:
+        send_message(
+            user_id,
+            "У тебя нет тренировок для отмены.",
+            main_keyboard(user_id)
+        )
+        return
+
+    parts = [
+        "❌ Напиши номер тренировки, "
+        "которую хочешь отменить:\n"
+    ]
+
+    for row in rows:
+        parts.append(training_short_text(row))
+
+    set_state(user_id, "cancel")
+
+    send_message(
+        user_id,
+        "\n\n".join(parts),
+        back_keyboard()
+    )
+
+
+def cancel_training(user_id, text):
+    try:
+        training_id = int(text.strip())
+    except ValueError:
+        send_message(
+            user_id,
+            "Напиши только номер тренировки."
+        )
+        return
+
+    if cancel_registration(user_id, training_id):
+        text = "✅ Запись отменена."
+    else:
+        text = "Не удалось найти эту запись."
+
+    clear_state(user_id)
+
+    send_message(
+        user_id,
+        text,
+        main_keyboard(user_id)
+    )
 
 
 # ============================================================
@@ -1679,1368 +772,476 @@ def notify_admins(
 # ============================================================
 
 def show_admin(user_id):
-    if user_id not in ADMINS:
-        show_main(user_id)
-        return
-
-    set_state(
-        user_id,
-        "admin",
-    )
-
-    vk_send(
-        user_id,
-        "⚙️ Админ-панель",
-        admin_keyboard(),
-    )
-
-
-def start_create_training(
-    user_id,
-):
-    if user_id not in ADMINS:
-        show_main(user_id)
-        return
-
-    set_state(
-        user_id,
-        "create_category",
-    )
-
-    vk_send(
-        user_id,
-        "➕ Создание тренировки\n\n"
-        "Выберите направление:",
-        create_category_keyboard(),
-    )
-
-
-def create_ask_date(
-    user_id,
-    category,
-):
-    set_state(
-        user_id,
-        "create_date",
-        category=category,
-    )
-
-    vk_send(
-        user_id,
-        "📅 Дата\n\n"
-        "Введите дату:\n"
-        "например, 05.10.2026",
-        back_keyboard(),
-    )
-
-
-def create_ask_time(
-    user_id,
-    data,
-):
-    set_state(
-        user_id,
-        "create_time",
-        **data,
-    )
-
-    vk_send(
-        user_id,
-        "🕐 Время\n\n"
-        "Введите начало и конец:\n"
-        "19:00-20:30",
-        back_keyboard(),
-    )
-
-
-def create_ask_format(
-    user_id,
-    data,
-):
-    set_state(
-        user_id,
-        "create_format",
-        **data,
-    )
-
-    vk_send(
-        user_id,
-        "🏐 Формат:",
-        format_keyboard(),
-    )
-
-
-def create_ask_level(
-    user_id,
-    data,
-):
-    set_state(
-        user_id,
-        "create_level",
-        **data,
-    )
-
-    vk_send(
-        user_id,
-        "📊 Уровень:",
-        level_keyboard(),
-    )
-
-
-def create_ask_capacity(
-    user_id,
-    data,
-):
-    set_state(
-        user_id,
-        "create_capacity",
-        **data,
-    )
-
-    if data["category"] == "Взрослая":
-        message = (
-            "👥 Сколько мест?\n\n"
-            "Минимум — 4 человека."
-        )
-    else:
-        message = (
-            "👥 Сколько мест?"
-        )
-
-    vk_send(
-        user_id,
-        message,
-        back_keyboard(),
-    )
-
-
-def create_ask_location(
-    user_id,
-    data,
-):
-    price = get_training_price(
-        data["category"],
-        data["capacity"],
-    )
-
-    if price is None:
-        vk_send(
-            user_id,
-            "❌ Нельзя создать "
-            "взрослую тренировку "
-            "менее чем на 4 человека.",
-            back_keyboard(),
-        )
-        return
-
-    data = dict(data)
-    data["price"] = price
-
-    set_state(
-        user_id,
-        "create_location",
-        **data,
-    )
-
-    vk_send(
-        user_id,
-        f"💳 Стоимость: {price} ₽\n\n"
-        "📍 Место\n\n"
-        "Введите место проведения:",
-        back_keyboard(),
-    )
-
-
-def save_training(
-    data,
-):
-    parsed_date = parse_date(
-        data["training_date"]
-    )
-
-    start_time = parse_time(
-        data["start_time"]
-    )
-
-    end_time = parse_time(
-        data["end_time"]
-    )
-
-    if not parsed_date:
-        return None
-
-    if not start_time or not end_time:
-        return None
-
-    connection = get_db()
-
-    try:
-        number = next_training_number(
-            connection
-        )
-
-        cursor = connection.execute(
-            """
-            INSERT INTO trainings(
-                training_number,
-                training_date,
-                weekday,
-                start_time,
-                end_time,
-                category,
-                format,
-                level,
-                capacity,
-                price,
-                location,
-                active,
-                created_at
-            )
-            VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, 1, ?
-            )
-            """,
-            (
-                number,
-                parsed_date.isoformat(),
-                WEEKDAYS_RU[
-                    parsed_date.weekday()
-                ],
-                start_time,
-                end_time,
-                normalize_category(
-                    data["category"]
-                ),
-                data["format"],
-                data["level"],
-                int(data["capacity"]),
-                int(data["price"]),
-                data["location"],
-                datetime.now().isoformat(),
-            ),
-        )
-
-        training_id = cursor.lastrowid
-
-        connection.commit()
-
-        return training_id
-
-    except Exception:
-        connection.rollback()
-
-        logging.exception(
-            "Create training error"
-        )
-
-        return None
-
-    finally:
-        connection.close()
-
-
-def finish_create_training(
-    user_id,
-    data,
-):
-    training_id = save_training(
-        data
-    )
-
-    if not training_id:
-        vk_send(
-            user_id,
-            "❌ Не удалось создать "
-            "тренировку.\n\n"
-            "Проверьте дату, время "
-            "и остальные данные.",
-            back_keyboard(),
-        )
-        return
-
-    training = get_training(
-        training_id
-    )
-
-    clear_state(
-        user_id
-    )
-
-    if not training:
-        vk_send(
-            user_id,
-            "✅ Тренировка создана.",
-            main_keyboard(user_id),
-        )
-        return
-
-    vk_send(
-        user_id,
-        "✅ Тренировка создана!\n\n"
-        + training_text(training),
-        main_keyboard(user_id),
-    )
-
-
-def show_all_trainings(
-    user_id,
-):
-    trainings = get_future_trainings()
-
-    if not trainings:
-        vk_send(
-            user_id,
-            "📋 Будущих тренировок "
-            "пока нет.",
-            admin_keyboard(),
-        )
-        return
-
-    parts = [
-        "📋 Будущие тренировки",
-        "",
-    ]
-
-    for training in trainings:
-        parts.append(
-            training_text(training)
-        )
-        parts.append(
-            "\n────────────\n"
-        )
-
-    vk_send(
-        user_id,
-        "\n".join(parts).strip(),
-        admin_keyboard(),
-    )
-
-
-def show_registration_trainings(
-    user_id,
-):
-    trainings = get_future_trainings()
-
-    if not trainings:
-        vk_send(
-            user_id,
-            "👥 Будущих тренировок "
-            "пока нет.",
-            admin_keyboard(),
-        )
-        return
-
-    rows = []
-
-    for training in trainings:
-        count = registered_count(
-            training["id"]
-        )
-
-        label = (
-            f"№{training['training_number']} "
-            f"{training['training_date'].strftime('%d.%m')} "
-            f"{training['start_time']} "
-            f"{count}/{training['capacity']}"
-        )
-
-        rows.append(
-            [
-                text_button(label)
-            ]
-        )
-
-    rows.append(
-        [
-            text_button(BACK)
-        ]
-    )
-
-    set_state(
-        user_id,
-        "admin_registration_training",
-    )
-
-    vk_send(
-        user_id,
-        "👥 Выберите тренировку:",
-        make_keyboard(rows),
-    )
-
-
-def show_participants(
-    user_id,
-    text,
-):
-    trainings = get_future_trainings()
-
-    selected = None
-
-    for training in trainings:
-        if text.startswith(
-            f"№{training['training_number']} "
-        ):
-            selected = training
-            break
-
-    if not selected:
-        vk_send(
-            user_id,
-            "Тренировка не найдена.",
-            back_keyboard(),
-        )
-        return
-
-    connection = get_db()
-
-    rows = connection.execute(
-        """
-        SELECT
-            user_id,
-            created_at
-        FROM registrations
-        WHERE training_id = ?
-        ORDER BY id
-        """,
-        (selected["id"],),
-    ).fetchall()
-
-    connection.close()
-
-    lines = [
-        training_text(selected),
-        "",
-        f"👥 Записано: "
-        f"{len(rows)}/"
-        f"{selected['capacity']}",
-        "",
-    ]
-
-    if not rows:
-        lines.append(
-            "Записей пока нет."
-        )
-    else:
-        for index, row in enumerate(
-            rows,
-            1,
-        ):
-            lines.append(
-                f"{index}. id{row['user_id']}"
-            )
-
-    set_state(
-        user_id,
-        "admin_registration_training",
-    )
-
-    vk_send(
-        user_id,
-        "\n".join(lines),
-        back_keyboard(),
-    )
-
-
-# ============================================================
-# CREATE TRAINING STATE
-# ============================================================
-
-def handle_create_state(
-    user_id,
-    state,
-    text,
-):
-    data = get_state(
-        user_id
-    )
-
-    if text == BACK:
-        show_admin(user_id)
-        return
-
-    if state == "create_category":
-
-        if text == "👧 Детская":
-            create_ask_date(
-                user_id,
-                "Детская",
-            )
-            return
-
-        if text == "🧑 Взрослая":
-            create_ask_date(
-                user_id,
-                "Взрослая",
-            )
-            return
-
-        vk_send(
-            user_id,
-            "Выберите направление "
-            "кнопкой.",
-            create_category_keyboard(),
-        )
-
-        return
-
-    if state == "create_date":
-
-        parsed = parse_date(text)
-
-        if not parsed:
-            vk_send(
-                user_id,
-                "❌ Неверная дата.\n\n"
-                "Пример:\n"
-                "05.10.2026",
-            )
-            return
-
-        new_data = {
-            "category": data[
-                "category"
-            ],
-            "training_date": (
-                parsed.isoformat()
-            ),
-        }
-
-        create_ask_time(
-            user_id,
-            new_data,
-        )
-
-        return
-
-    if state == "create_time":
-
-        clean_text = (
-            text
-            .strip()
-            .replace(" ", "")
-            .replace("–", "-")
-            .replace("—", "-")
-        )
-
-        parts = clean_text.split("-")
-
-        if len(parts) != 2:
-            vk_send(
-                user_id,
-                "❌ Неверный формат.\n\n"
-                "Пример:\n"
-                "19:00-20:30",
-            )
-            return
-
-        start_time = parse_time(
-            parts[0]
-        )
-
-        end_time = parse_time(
-            parts[1]
-        )
-
-        if not start_time or not end_time:
-            vk_send(
-                user_id,
-                "❌ Проверьте время.\n\n"
-                "Пример:\n"
-                "19:00-20:30",
-            )
-            return
-
-        new_data = dict(data)
-
-        new_data["start_time"] = (
-            start_time
-        )
-
-        new_data["end_time"] = (
-            end_time
-        )
-
-        create_ask_format(
-            user_id,
-            new_data,
-        )
-
-        return
-
-    if state == "create_format":
-
-        allowed = {
-            "Техничка",
-            "MIXED",
-            "Женская",
-            "Мужская",
-            "Общая",
-        }
-
-        if text not in allowed:
-            vk_send(
-                user_id,
-                "Выберите формат "
-                "кнопкой.",
-                format_keyboard(),
-            )
-            return
-
-        new_data = dict(data)
-        new_data["format"] = text
-
-        create_ask_level(
-            user_id,
-            new_data,
-        )
-
-        return
-
-    if state == "create_level":
-
-        allowed = {
-            "Начинающие",
-            "Средний",
-            "Продвинутый",
-            "Любой уровень",
-        }
-
-        if text not in allowed:
-            vk_send(
-                user_id,
-                "Выберите уровень "
-                "кнопкой.",
-                level_keyboard(),
-            )
-            return
-
-        new_data = dict(data)
-        new_data["level"] = text
-
-        create_ask_capacity(
-            user_id,
-            new_data,
-        )
-
-        return
-
-    if state == "create_capacity":
-
-        try:
-            capacity = int(
-                text.strip()
-            )
-        except ValueError:
-            vk_send(
-                user_id,
-                "❌ Введите количество "
-                "мест числом.",
-            )
-            return
-
-        if capacity <= 0:
-            vk_send(
-                user_id,
-                "❌ Количество мест "
-                "должно быть больше 0.",
-            )
-            return
-
-        if (
-            data["category"]
-            == "Взрослая"
-            and capacity < 4
-        ):
-            vk_send(
-                user_id,
-                "❌ Для взрослой "
-                "тренировки минимум "
-                "4 места.",
-            )
-            return
-
-        new_data = dict(data)
-
-        new_data["capacity"] = (
-            capacity
-        )
-
-        create_ask_location(
-            user_id,
-            new_data,
-        )
-
-        return
-
-    if state == "create_location":
-
-        location = text.strip()
-
-        if not location:
-            vk_send(
-                user_id,
-                "❌ Укажите место "
-                "проведения.",
-            )
-            return
-
-        price = get_training_price(
-            data["category"],
-            data["capacity"],
-        )
-
-        if price is None:
-            vk_send(
-                user_id,
-                "❌ Не удалось определить "
-                "стоимость.",
-                back_keyboard(),
-            )
-            return
-
-        new_data = dict(data)
-
-        new_data["location"] = location
-        new_data["price"] = price
-
-        finish_create_training(
-            user_id,
-            new_data,
-        )
-
-        return
+    set_state(user_id, "admin")
+
+    send_message(
+        user_id,
+        "⚙️ Админ-панель:",
+        admin_keyboard()
+    )
+
+
+def admin_schedule(user_id):
+    rows = get_week_trainings()
+
+    if not rows:
+        send_message(
+            user_id,
+            "На ближайшие 7 дней тренировок нет.",
+            admin_keyboard()
+        )
+        return
+
+    conn = get_db()
+
+    parts = ["📋 Расписание с учениками:\n"]
+
+    for row in rows:
+        students = conn.execute("""
+            SELECT u.vk_id, u.first_name, u.last_name
+            FROM registrations r
+            JOIN users u
+              ON u.id=r.user_id
+            WHERE r.training_id=?
+        """, (row["id"],)).fetchall()
+
+        parts.append(training_text(row))
+
+        if not students:
+            parts.append("Ученики: пока нет")
+        else:
+            parts.append("Ученики:")
+
+            for student in students:
+                name = (
+                    f"{student['first_name'] or ''} "
+                    f"{student['last_name'] or ''}"
+                ).strip()
+
+                if not name:
+                    name = f"id{student['vk_id']}"
+
+                parts.append(
+                    f"• {name} — vk.com/id{student['vk_id']}"
+                )
+
+    conn.close()
+
+    send_message(
+        user_id,
+        "\n\n".join(parts),
+        admin_keyboard()
+    )
+
+
+def start_create_training(user_id):
+    set_state(user_id, "create")
+
+    send_message(
+        user_id,
+        "➕ Создание тренировки\n\n"
+        "Отправь ВСЕ данные одним сообщением.\n"
+        "Каждый пункт с новой строки:\n\n"
+        "1. Дата\n"
+        "2. Время\n"
+        "3. Формат\n"
+        "4. Уровень\n"
+        "5. Цена\n"
+        "6. Тренер\n\n"
+        "Пример:\n\n"
+        "06.10.2026\n"
+        "19:00-20:30\n"
+        "Техничка\n"
+        "Общий\n"
+        "1200\n"
+        "Алексей",
+        back_keyboard()
+    )
+
+
+def create_training(user_id, text):
+    lines = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip()
+    ]
+
+    if len(lines) != 6:
+        send_message(
+            user_id,
+            "❌ Нужно ровно 6 строк:\n\n"
+            "Дата\n"
+            "Время\n"
+            "Формат\n"
+            "Уровень\n"
+            "Цена\n"
+            "Тренер"
+        )
+        return
+
+    training_date = lines[0]
+    time_value = lines[1]
+    format_value = lines[2]
+    level_value = lines[3]
+    price_value = lines[4]
+    coach_value = lines[5]
+
+    parsed_date = parse_date(training_date)
+
+    if not parsed_date:
+        send_message(
+            user_id,
+            "❌ Неверная дата.\n"
+            "Используй формат ДД.ММ.ГГГГ."
+        )
+        return
+
+    if not price_value.isdigit():
+        send_message(
+            user_id,
+            "❌ Цена должна быть числом."
+        )
+        return
+
+    if "-" in time_value:
+        time_parts = time_value.split("-", 1)
+        start_time = time_parts[0].strip()
+        end_time = time_parts[1].strip()
+    else:
+        start_time = time_value
+        end_time = ""
+
+    conn = get_db()
+
+    now = datetime.now().isoformat()
+
+    conn.execute("""
+        INSERT INTO trainings (
+            training_date,
+            weekday,
+            start_time,
+            end_time,
+            title,
+            category,
+            age_group,
+            level,
+            format,
+            coach,
+            capacity,
+            price,
+            location,
+            status,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        parsed_date.strftime("%Y-%m-%d"),
+        WEEKDAYS[parsed_date.weekday()],
+        start_time,
+        end_time,
+        format_value,
+        "adults",
+        "adults",
+        level_value,
+        format_value,
+        coach_value,
+        20,
+        int(price_value),
+        "",
+        "active",
+        now,
+        now
+    ))
+
+    conn.commit()
+
+    training_id = conn.execute(
+        "SELECT last_insert_rowid()"
+    ).fetchone()[0]
+
+    conn.close()
+
+    clear_state(user_id)
+
+    send_message(
+        user_id,
+        f"✅ Тренировка создана #{training_id}\n\n"
+        f"{format_date(parsed_date.strftime('%Y-%m-%d'))} "
+        f"{time_value}\n"
+        f"Формат: {format_value}\n"
+        f"Уровень: {level_value}\n"
+        f"Цена: {price_value} ₽\n"
+        f"Тренер: {coach_value}",
+        admin_keyboard()
+    )
+
+
+def start_delete_training(user_id):
+    rows = get_future_trainings()
+
+    if not rows:
+        send_message(
+            user_id,
+            "Тренировок для удаления нет.",
+            admin_keyboard()
+        )
+        return
+
+    parts = [
+        "🗑 Напиши номер тренировки, "
+        "которую нужно удалить:\n"
+    ]
+
+    for row in rows:
+        parts.append(training_short_text(row))
+
+    set_state(user_id, "delete")
+
+    send_message(
+        user_id,
+        "\n\n".join(parts),
+        back_keyboard()
+    )
+
+
+def delete_training(user_id, text):
+    try:
+        training_id = int(text.strip())
+    except ValueError:
+        send_message(
+            user_id,
+            "Напиши только номер тренировки."
+        )
+        return
+
+    conn = get_db()
+
+    row = conn.execute("""
+        SELECT id
+        FROM trainings
+        WHERE id=?
+          AND status='active'
+    """, (training_id,)).fetchone()
+
+    if not row:
+        conn.close()
+
+        send_message(
+            user_id,
+            "Такой тренировки нет."
+        )
+        return
+
+    conn.execute("""
+        UPDATE trainings
+        SET status='deleted',
+            updated_at=?
+        WHERE id=?
+    """, (
+        datetime.now().isoformat(),
+        training_id
+    ))
+
+    conn.commit()
+    conn.close()
+
+    clear_state(user_id)
+
+    send_message(
+        user_id,
+        "✅ Тренировка удалена.",
+        admin_keyboard()
+    )
 
 
 # ============================================================
 # MESSAGE HANDLER
 # ============================================================
 
-def handle_message(
-    user_id,
-    text,
-):
-    user_id = int(user_id)
-
-    text = str(
-        text or ""
-    ).strip()
-
-    state_data = get_state(
-        user_id
-    )
-
-    state = state_data.get(
-        "state",
-        "main",
-    )
-
-    logging.info(
-        "HANDLE MESSAGE "
-        "user=%s state=%s text=%r",
-        user_id,
-        state,
-        text,
-    )
-
-    # --------------------------------------------------------
-    # CREATE TRAINING
-    # --------------------------------------------------------
-
-    if state.startswith(
-        "create_"
-    ):
-        handle_create_state(
-            user_id,
-            state,
-            text,
-        )
-        return
-
-    # --------------------------------------------------------
-    # BACK
-    # --------------------------------------------------------
-
-    if text == BACK:
-
-        if state in {
-            "prices",
-            "individual",
-            "schedule_category",
-            "booking_category",
-            "admin",
-        }:
-            show_main(user_id)
-            return
-
-        if state == "booking_date":
-            show_booking_menu(
-                user_id
-            )
-            return
-
-        if state == "booking_training":
-            category = state_data.get(
-                "category"
-            )
-
-            if category:
-                show_booking_dates(
-                    user_id,
-                    category,
-                )
-            else:
-                show_booking_menu(
-                    user_id
-                )
-
-            return
-
-        if state == "booking_confirm":
-
-            training = get_training(
-                state_data.get(
-                    "training_id"
-                )
-            )
-
-            if training:
-
-                parsed_date = parse_date(
-                    training[
-                        "training_date"
-                    ]
-                )
-
-                show_booking_trainings(
-                    user_id,
-                    normalize_category(
-                        training[
-                            "category"
-                        ]
-                    ),
-                    parsed_date.isoformat(),
-                )
-
-            else:
-                show_booking_menu(
-                    user_id
-                )
-
-            return
-
-        if state == "admin_registration_training":
-            show_admin(user_id)
-            return
-
-        show_main(user_id)
-        return
-
-    # --------------------------------------------------------
-    # MAIN MENU
-    # --------------------------------------------------------
-
-    if text == "📅 Расписание":
-        show_schedule_menu(
-            user_id
-        )
-        return
-
-    if text == "📝 Записаться":
-        show_booking_menu(
-            user_id
-        )
-        return
-
-    if text == "💰 Цены":
-        show_prices(
-            user_id
-        )
-        return
-
-    if text == "🏐 Индивидуальная тренировка":
-        show_individual(
-            user_id
-        )
-        return
-
-    if (
-        text == "⚙️ Админ-панель"
-        and user_id in ADMINS
-    ):
-        show_admin(
-            user_id
-        )
-        return
-
-    # --------------------------------------------------------
-    # ADMIN MENU
-    # --------------------------------------------------------
-
-    if (
-        user_id in ADMINS
-        and text == "➕ Создать тренировку"
-    ):
-        start_create_training(
-            user_id
-        )
-        return
-
-    if (
-        user_id in ADMINS
-        and text == "📋 Все тренировки"
-    ):
-        show_all_trainings(
-            user_id
-        )
-        return
-
-    if (
-        user_id in ADMINS
-        and text == "👥 Записи"
-    ):
-        show_registration_trainings(
-            user_id
-        )
-        return
-
-    # --------------------------------------------------------
-    # SCHEDULE CATEGORY
-    # --------------------------------------------------------
-
-    if state == "schedule_category":
-
-        if text == "👧 Детские":
-            category = "Детская"
-
-        elif text == "🧑 Взрослые":
-            category = "Взрослая"
-
-        else:
-            vk_send(
-                user_id,
-                "Выберите направление "
-                "кнопкой.",
-                category_keyboard(),
-            )
-            return
-
-        save_user_category(
-            user_id,
-            category,
-        )
-
-        show_schedule(
-            user_id,
-            category,
-        )
-
-        return
-
-    # --------------------------------------------------------
-    # BOOKING CATEGORY
-    # --------------------------------------------------------
-
-    if state == "booking_category":
-
-        if text == "👧 Детские":
-            category = "Детская"
-
-        elif text == "🧑 Взрослые":
-            category = "Взрослая"
-
-        else:
-            vk_send(
-                user_id,
-                "Выберите направление "
-                "кнопкой.",
-                category_keyboard(),
-            )
-            return
-
-        save_user_category(
-            user_id,
-            category,
-        )
-
-        show_booking_dates(
-            user_id,
-            category,
-        )
-
-        return
-
-    # --------------------------------------------------------
-    # BOOKING DATE
-    # --------------------------------------------------------
-
-    if state == "booking_date":
-
-        parsed_date = parse_date(
-            text
-        )
-
-        if not parsed_date:
-            vk_send(
-                user_id,
-                "Выберите дату "
-                "кнопкой.",
-            )
-            return
-
-        category = state_data.get(
-            "category"
-        )
-
-        show_booking_trainings(
-            user_id,
-            category,
-            parsed_date.isoformat(),
-        )
-
-        return
-
-    # --------------------------------------------------------
-    # BOOKING TRAINING
-    # --------------------------------------------------------
-
-    if state == "booking_training":
-
-        training = find_training_from_button(
-            state_data.get(
-                "category"
-            ),
-            state_data.get(
-                "selected_date"
-            ),
-            text,
-        )
-
-        if not training:
-            vk_send(
-                user_id,
-                "Выберите тренировку "
-                "кнопкой.",
-            )
-            return
-
-        show_booking_confirmation(
-            user_id,
-            training,
-        )
-
-        return
-
-    # --------------------------------------------------------
-    # BOOKING CONFIRMATION
-    # --------------------------------------------------------
-
-    if state == "booking_confirm":
-
-        if text != "✅ Записаться":
-            vk_send(
-                user_id,
-                "Нажмите кнопку "
-                "«✅ Записаться».",
-            )
-            return
-
-        training_id = state_data.get(
-            "training_id"
-        )
-
-        success, message = register_user(
-            user_id,
-            training_id,
-        )
-
-        if not success:
-            vk_send(
-                user_id,
-                "❌ " + message,
-                back_keyboard(),
-            )
-            return
-
-        notify_admins(
-            user_id,
-            training_id,
-        )
-
-        clear_state(
-            user_id
-        )
-
-        vk_send(
-            user_id,
-            "✅ Вы записаны "
-            "на тренировку!",
-            main_keyboard(user_id),
-        )
-
-        return
-
-    # --------------------------------------------------------
-    # ADMIN REGISTRATIONS
-    # --------------------------------------------------------
-
-    if (
-        state == "admin_registration_training"
-        and user_id in ADMINS
-    ):
-        show_participants(
-            user_id,
-            text,
-        )
-        return
-
-    # --------------------------------------------------------
-    # FALLBACK
-    # --------------------------------------------------------
-
-    vk_send(
-        user_id,
-        "🏐 VOLLEY WAVE\n\n"
-        "Выберите действие:",
-        main_keyboard(user_id),
-    )
+def handle_message(user_id, text):
+    ensure_user(user_id)
+
+    text = (text or "").strip()
+    state = get_state(user_id)
+
+    print(
+        f"VK MESSAGE: user_id={user_id}, "
+        f"state={state}, text={text!r}",
+        flush=True
+    )
+
+    # Назад
+    if text == "⬅️ Назад":
+        show_main(user_id)
+        return
+
+    # Главное меню
+    if text in (
+        "Привет",
+        "привет",
+        "Начать",
+        "начать",
+        "/start"
+    ):
+        show_main(user_id)
+        return
+
+    # --------------------------------------------------------
+    # ADMIN
+    # --------------------------------------------------------
+
+    if user_id in ADMINS:
+
+        if text == "⚙️ Админ-панель":
+            show_admin(user_id)
+            return
+
+        if text == "📋 Расписание с учениками":
+            admin_schedule(user_id)
+            return
+
+        if text == "➕ Создать тренировку":
+            start_create_training(user_id)
+            return
+
+        if text == "🗑 Удалить тренировку":
+            start_delete_training(user_id)
+            return
+
+        if state == "create":
+            create_training(user_id, text)
+            return
+
+        if state == "delete":
+            delete_training(user_id, text)
+            return
+
+        if state == "admin":
+            show_admin(user_id)
+            return
+
+    # --------------------------------------------------------
+    # USER
+    # --------------------------------------------------------
+
+    if text == "📅 Расписание на неделю":
+        show_schedule(user_id)
+        return
+
+    if text == "📝 Записаться":
+        start_booking(user_id)
+        return
+
+    if text == "📋 Мои тренировки":
+        show_my_trainings(user_id)
+        return
+
+    if text == "❌ Отмена тренировки":
+        start_cancel(user_id)
+        return
+
+    if state == "booking":
+        booking(user_id, text)
+        return
+
+    if state == "cancel":
+        cancel_training(user_id, text)
+        return
+
+    show_main(user_id)
 
 
 # ============================================================
 # VK CALLBACK
 # ============================================================
 
-def process_vk_event(
-    data,
-):
-    if not isinstance(
-        data,
-        dict,
-    ):
-        logging.error(
-            "VK event is not dict"
-        )
-        return "ok"
+def process_event(data):
+    if not isinstance(data, dict):
+        return "ok"
 
-    event_type = data.get(
-        "type"
-    )
+    event_type = data.get("type")
 
-    logging.info(
-        "VK EVENT TYPE: %r",
-        event_type,
-    )
+    # Подтверждение Callback API
+    if event_type == "confirmation":
+        return VK_CONFIRMATION_TOKEN
 
-    # --------------------------------------------------------
-    # CONFIRMATION
-    # --------------------------------------------------------
+    # Нас интересуют только новые сообщения
+    if event_type != "message_new":
+        return "ok"
 
-    if event_type == "confirmation":
-        logging.info(
-            "VK confirmation request"
-        )
+    # Проверка секретного ключа
+    if VK_SECRET_KEY:
+        if data.get("secret") != VK_SECRET_KEY:
+            print("VK SECRET MISMATCH", flush=True)
+            return "ok"
 
-        return (
-            VK_CONFIRMATION_TOKEN
-        )
+    obj = data.get("object")
 
-    # --------------------------------------------------------
-    # SECRET
-    # --------------------------------------------------------
+    user_id = None
+    text = ""
 
-    received_secret = data.get(
-        "secret"
-    )
+    if isinstance(obj, dict):
 
-    if (
-        VK_SECRET_KEY
-        and received_secret
-        != VK_SECRET_KEY
-    ):
-        logging.error(
-            "VK SECRET MISMATCH"
-        )
+        # Новый формат VK
+        message = obj.get("message")
 
-        logging.error(
-            "Received secret: %r",
-            received_secret,
-        )
+        if isinstance(message, dict):
+            user_id = message.get("from_id")
+            text = message.get("text", "")
 
-        return "ok"
+        # Старый формат VK
+        else:
+            user_id = obj.get("from_id")
+            text = obj.get("text", "")
 
-    # --------------------------------------------------------
-    # IGNORE OTHER EVENTS
-    # --------------------------------------------------------
+    if user_id is None:
+        print(
+            "VK EVENT WITHOUT USER:",
+            json.dumps(data, ensure_ascii=False),
+            flush=True
+        )
+        return "ok"
 
-    if event_type != "message_new":
-        return "ok"
+    try:
+        user_id = int(user_id)
+    except (TypeError, ValueError):
+        return "ok"
 
-    # --------------------------------------------------------
-    # OBJECT
-    # --------------------------------------------------------
+    handle_message(user_id, text)
 
-    obj = data.get(
-        "object"
-    )
-
-    if not isinstance(
-        obj,
-        dict,
-    ):
-        logging.error(
-            "VK object is not dict: %r",
-            obj,
-        )
-        return "ok"
-
-    # --------------------------------------------------------
-    # NEW VK FORMAT
-    # --------------------------------------------------------
-
-    message = obj.get(
-        "message"
-    )
-
-    if isinstance(
-        message,
-        dict,
-    ):
-        user_id = message.get(
-            "from_id"
-        )
-
-        text = message.get(
-            "text",
-            "",
-        )
-
-    # --------------------------------------------------------
-    # FALLBACK OLD FORMAT
-    # --------------------------------------------------------
-
-    else:
-        user_id = obj.get(
-            "from_id"
-        )
-
-        text = obj.get(
-            "text",
-            "",
-        )
-
-    if not user_id:
-        logging.error(
-            "Cannot find user_id in VK event: %r",
-            data,
-        )
-        return "ok"
-
-    text = str(
-        text or ""
-    ).strip()
-
-    logging.info(
-        "VK MESSAGE: "
-        "user_id=%s text=%r",
-        user_id,
-        text,
-    )
-
-    try:
-        handle_message(
-            int(user_id),
-            text,
-        )
-
-    except Exception:
-        logging.exception(
-            "HANDLE MESSAGE ERROR"
-        )
-
-        try:
-            vk_send(
-                int(user_id),
-                "⚠️ Произошла ошибка. "
-                "Попробуйте ещё раз.",
-                main_keyboard(
-                    int(user_id)
-                ),
-            )
-        except Exception:
-            logging.exception(
-                "ERROR MESSAGE SEND FAILED"
-            )
-
-    return "ok"
+    return "ok"
 
 
-# ============================================================
-# FLASK CALLBACK
-# ============================================================
-
-@app.route(
-    "/callback",
-    methods=["POST"],
-)
+@app.route("/callback", methods=["POST"])
 def callback():
-    try:
-        data = request.get_json(
-            silent=True
-        )
+    try:
+        data = request.get_json(silent=True)
 
-        logging.info(
-            "========== VK CALLBACK =========="
-        )
+        if not data:
+            print("EMPTY VK EVENT", flush=True)
+            return "ok"
 
-        logging.info(
-            "RAW CALLBACK: %r",
-            data,
-        )
+        print(
+            "VK EVENT:",
+            json.dumps(data, ensure_ascii=False),
+            flush=True
+        )
 
-        result = process_vk_event(
-            data
-        )
+        return process_event(data)
 
-        logging.info(
-            "CALLBACK RESPONSE: %r",
-            result,
-        )
-
-        return result
-
-    except Exception:
-        logging.exception(
-            "CALLBACK CRITICAL ERROR"
-        )
-
-        return "ok"
+    except Exception as error:
+        print(
+            "CALLBACK ERROR:",
+            repr(error),
+            flush=True
+        )
+        return "ok"
 
 
-# ============================================================
-# HEALTH
-# ============================================================
-
-@app.route(
-    "/",
-    methods=["GET"],
-)
+@app.route("/", methods=["GET"])
 def index():
-    return (
-        f"VOLLEY WAVE VK BOT "
-        f"{VERSION} WORKING",
-        200,
-    )
-
-
-@app.route(
-    "/health",
-    methods=["GET"],
-)
-def health():
-    return (
-        "OK",
-        200,
-    )
+    return "VOLLEY WAVE BOT OK"
 
 
 # ============================================================
@@ -3048,55 +1249,9 @@ def health():
 # ============================================================
 
 if __name__ == "__main__":
+    port = int(os.getenv("PORT", "10000"))
 
-    logging.info(
-        "===================================="
-    )
-
-    logging.info(
-        "VOLLEY WAVE VK BOT %s",
-        VERSION,
-    )
-
-    logging.info(
-        "GROUP_ID: %s",
-        GROUP_ID,
-    )
-
-    logging.info(
-        "VK API VERSION: %s",
-        VK_API_VERSION,
-    )
-
-    logging.info(
-        "VK TOKEN PRESENT: %s",
-        bool(VK_TOKEN),
-    )
-
-    logging.info(
-        "VK CONFIRMATION PRESENT: %s",
-        bool(VK_CONFIRMATION_TOKEN),
-    )
-
-    logging.info(
-        "VK SECRET PRESENT: %s",
-        bool(VK_SECRET_KEY),
-    )
-
-    logging.info(
-        "===================================="
-    )
-
-    init_db()
-
-    port = int(
-        os.getenv(
-            "PORT",
-            "10000",
-        )
-    )
-
-    app.run(
-        host="0.0.0.0",
-        port=port,
-    )
+    app.run(
+        host="0.0.0.0",
+        port=port
+    )

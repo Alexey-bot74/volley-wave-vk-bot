@@ -11,6 +11,7 @@ VK_TOKEN = os.getenv("VK_TOKEN")
 
 init_db()
 
+
 def send_message(user_id, message, keyboard=None):
     url = "https://api.vk.com/method/messages.send"
 
@@ -26,7 +27,9 @@ def send_message(user_id, message, keyboard=None):
         params["keyboard"] = keyboard
 
     response = requests.get(url, params=params)
+
     print("VK RESPONSE:", response.text)
+
 
 def main_keyboard():
     return """{
@@ -80,14 +83,18 @@ def main_keyboard():
                         "type": "text",
                         "label": "❓ Задать вопрос"
                     }
-                ]
+                }
             ]
         ]
     }"""
 
+
 @app.route("/callback", methods=["POST"])
 def callback():
+
     data = request.json
+
+    print("VK EVENT:", data)
 
     if SECRET_KEY and data.get("secret") != SECRET_KEY:
         return "invalid secret", 403
@@ -98,58 +105,19 @@ def callback():
     if data.get("type") != "message_new":
         return "ok"
 
-    message = data.get("object", {})
-    vk_message = message.get("message", {})
+    obj = data.get("object", {})
+    message = obj.get("message", {})
 
-    user_id = vk_message.get("from_id")
-    text = vk_message.get("text", "").strip()
+    user_id = message.get("from_id")
+    text = message.get("text", "").strip()
+
+    print("USER ID:", user_id)
+    print("TEXT:", text)
 
     if not user_id:
         return "ok"
 
-    if text == "🏐 Записаться":
-        reply = (
-            "🏐 Запись на тренировку\n\n"
-            "Здесь можно будет выбрать подходящую тренировку."
-        )
-
-    elif text == "📅 Расписание":
-        reply = (
-            "📅 Расписание\n\n"
-            "Скоро здесь появится актуальное расписание тренировок."
-        )
-
-    elif text == "👤 Мои тренировки":
-        reply = (
-            "👤 Мои тренировки\n\n"
-            "Здесь будут отображаться ваши записи на тренировки."
-        )
-
-    elif text == "💰 Цены":
-        reply = (
-            "💰 Цены\n\n"
-            "Здесь появится актуальная стоимость тренировок."
-        )
-
-    elif text == "👶 Детские группы":
-        reply = (
-            "👶 Детские группы\n\n"
-            "Здесь появится информация о детских группах."
-        )
-
-    elif text == "📍 Где тренируемся":
-        reply = (
-            "📍 Где тренируемся\n\n"
-            "Здесь появится информация о площадках VOLLEY WAVE."
-        )
-
-    elif text == "❓ Задать вопрос":
-        reply = (
-            "❓ Задать вопрос\n\n"
-            "Напишите свой вопрос следующим сообщением."
-        )
-
-    else:
+    if text == "Привет" or text.lower() == "привет":
         send_message(
             user_id,
             "Привет! 👋\n\n"
@@ -157,16 +125,72 @@ def callback():
             "Выберите нужный раздел:",
             main_keyboard()
         )
-        return "ok"
 
-    send_message(user_id, reply)
+    elif text == "🏐 Записаться":
+        send_message(
+            user_id,
+            "🏐 Запись на тренировку\n\n"
+            "Здесь можно будет выбрать подходящую тренировку."
+        )
+
+    elif text == "📅 Расписание":
+        send_message(
+            user_id,
+            "📅 Расписание\n\n"
+            "Скоро здесь появится актуальное расписание тренировок."
+        )
+
+    elif text == "👤 Мои тренировки":
+        send_message(
+            user_id,
+            "👤 Мои тренировки\n\n"
+            "Здесь будут отображаться ваши записи на тренировки."
+        )
+
+    elif text == "💰 Цены":
+        send_message(
+            user_id,
+            "💰 Цены\n\n"
+            "Здесь появится актуальная стоимость тренировок."
+        )
+
+    elif text == "👶 Детские группы":
+        send_message(
+            user_id,
+            "👶 Детские группы\n\n"
+            "Здесь появится информация о детских группах."
+        )
+
+    elif text == "📍 Где тренируемся":
+        send_message(
+            user_id,
+            "📍 Где тренируемся\n\n"
+            "Здесь появится информация о площадках VOLLEY WAVE."
+        )
+
+    elif text == "❓ Задать вопрос":
+        send_message(
+            user_id,
+            "❓ Задать вопрос\n\n"
+            "Напишите свой вопрос следующим сообщением."
+        )
+
+    else:
+        send_message(
+            user_id,
+            "Я пока не понял сообщение 🤔\n\n"
+            "Выберите раздел из меню:",
+            main_keyboard()
+        )
 
     return "ok"
+
 
 @app.route("/", methods=["GET"])
 def home():
     return "VOLLEY WAVE VK BOT IS RUNNING"
 
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
-    app.run(host="0.0.0.0", port=port) 
+    app.run(host="0.0.0.0", port=port)

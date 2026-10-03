@@ -16,7 +16,6 @@ VK_TOKEN = os.getenv("VK_TOKEN")
 
 init_db()
 
-# Диагностика базы
 try:
     all_trainings = get_trainings()
 
@@ -128,6 +127,50 @@ def main_keyboard():
     }"""
 
 
+def days_keyboard():
+    return """{
+        "one_time": false,
+        "buttons": [
+            [
+                {
+                    "action": {
+                        "type": "text",
+                        "label": "Понедельник"
+                    }
+                },
+                {
+                    "action": {
+                        "type": "text",
+                        "label": "Вторник"
+                    }
+                }
+            ],
+            [
+                {
+                    "action": {
+                        "type": "text",
+                        "label": "Среда"
+                    }
+                },
+                {
+                    "action": {
+                        "type": "text",
+                        "label": "Четверг"
+                    }
+                }
+            ],
+            [
+                {
+                    "action": {
+                        "type": "text",
+                        "label": "Пятница"
+                    }
+                }
+            ]
+        ]
+    }"""
+
+
 def format_schedule():
     trainings = get_trainings()
 
@@ -145,22 +188,17 @@ def format_schedule():
     current_day = None
 
     for training in trainings:
-
         day = training["day_of_week"]
 
         if day != current_day:
             current_day = day
-
             lines.append("")
             lines.append(f"━━ {DAYS.get(day, '')} ━━")
 
         registered = get_registration_count(training["id"])
-        capacity = training["capacity"]
 
-        available = max(
-            capacity - registered,
-            0
-        )
+        capacity = training["capacity"]
+        available = max(capacity - registered, 0)
 
         title = training["title"]
 
@@ -176,7 +214,7 @@ def format_schedule():
         )
 
         lines.append(
-            f"💰 {training['price']}  |  👥 свободно: {available}"
+            f"💰 {training['price']} ₽  |  👥 свободно: {available}"
         )
 
     return "\n".join(lines)
@@ -199,9 +237,11 @@ def callback():
         return "ok"
 
     obj = data.get("object", {})
+
     message = obj.get("message", {})
 
     user_id = message.get("from_id")
+
     text = message.get("text", "").strip()
 
     print("USER ID:", user_id)
@@ -209,6 +249,9 @@ def callback():
 
     if not user_id:
         return "ok"
+
+
+    # ПРИВЕТСТВИЕ
 
     if text == "Привет" or text.lower() == "привет":
 
@@ -220,53 +263,20 @@ def callback():
             main_keyboard()
         )
 
+
+    # ЗАПИСАТЬСЯ
+
     elif text == "🏐 Записаться":
-    send_message(
-        user_id,
-        "🏐 Запись на тренировку\n\n"
-        "Выберите день:",
-        """{
-            "one_time": false,
-            "buttons": [
-                [
-                    {
-                        "action": {
-                            "type": "text",
-                            "label": "Понедельник"
-                        }
-                    },
-                    {
-                        "action": {
-                            "type": "text",
-                            "label": "Вторник"
-                        }
-                    }
-                ],
-                [
-                    {
-                        "action": {
-                            "type": "text",
-                            "label": "Среда"
-                        }
-                    },
-                    {
-                        "action": {
-                            "type": "text",
-                            "label": "Четверг"
-                        }
-                    }
-                ],
-                [
-                    {
-                        "action": {
-                            "type": "text",
-                            "label": "Пятница"
-                        }
-                    }
-                ]
-            ]
-        }"""
-    )
+
+        send_message(
+            user_id,
+            "🏐 Запись на тренировку\n\n"
+            "Выберите день:",
+            days_keyboard()
+        )
+
+
+    # РАСПИСАНИЕ
 
     elif text == "📅 Расписание":
 
@@ -278,6 +288,9 @@ def callback():
             main_keyboard()
         )
 
+
+    # МОИ ТРЕНИРОВКИ
+
     elif text == "👤 Мои тренировки":
 
         send_message(
@@ -286,6 +299,9 @@ def callback():
             "Здесь будут отображаться ваши записи.",
             main_keyboard()
         )
+
+
+    # ЦЕНЫ
 
     elif text == "💰 Цены":
 
@@ -296,6 +312,9 @@ def callback():
             main_keyboard()
         )
 
+
+    # ДЕТСКИЕ ГРУППЫ
+
     elif text == "👶 Детские группы":
 
         send_message(
@@ -304,6 +323,9 @@ def callback():
             "Здесь появится информация о детских группах.",
             main_keyboard()
         )
+
+
+    # ГДЕ ТРЕНИРУЕМСЯ
 
     elif text == "📍 Где тренируемся":
 
@@ -314,6 +336,9 @@ def callback():
             main_keyboard()
         )
 
+
+    # ЗАДАТЬ ВОПРОС
+
     elif text == "❓ Задать вопрос":
 
         send_message(
@@ -322,6 +347,94 @@ def callback():
             "Напишите свой вопрос следующим сообщением.",
             main_keyboard()
         )
+
+
+    # ВЫБОР ДНЯ
+
+    elif text in [
+        "Понедельник",
+        "Вторник",
+        "Среда",
+        "Четверг",
+        "Пятница"
+    ]:
+
+        day_number = {
+            "Понедельник": 1,
+            "Вторник": 2,
+            "Среда": 3,
+            "Четверг": 4,
+            "Пятница": 5
+        }
+
+        selected_day = day_number[text]
+
+        trainings = [
+            training
+            for training in get_trainings()
+            if training["day_of_week"] == selected_day
+        ]
+
+        if not trainings:
+
+            send_message(
+                user_id,
+                "В этот день тренировок пока нет.",
+                days_keyboard()
+            )
+
+        else:
+
+            lines = [
+                f"🏐 {text.upper()}",
+                "",
+                "Выберите тренировку:"
+            ]
+
+            for training in trainings:
+
+                registered = get_registration_count(
+                    training["id"]
+                )
+
+                available = max(
+                    training["capacity"] - registered,
+                    0
+                )
+
+                title = training["title"]
+
+                if training["level"]:
+                    title += f" — {training['level']}"
+
+                if training["age_group"]:
+                    title += f" ({training['age_group']})"
+
+                lines.append("")
+                lines.append(
+                    f"🕐 {training['time']}"
+                )
+
+                lines.append(
+                    f"{title}"
+                )
+
+                lines.append(
+                    f"💰 {training['price']} ₽"
+                )
+
+                lines.append(
+                    f"👥 Свободно: {available}"
+                )
+
+            send_message(
+                user_id,
+                "\n".join(lines),
+                main_keyboard()
+            )
+
+
+    # НЕИЗВЕСТНОЕ СООБЩЕНИЕ
 
     else:
 
@@ -341,7 +454,10 @@ def home():
 
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 10000))
+
+    port = int(
+        os.getenv("PORT", 10000)
+    )
 
     app.run(
         host="0.0.0.0",

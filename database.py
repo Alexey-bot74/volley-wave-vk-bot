@@ -4,8 +4,8 @@ DB_NAME = "volley_wave.db"
 
 
 def get_connection():
-    connection = sqlite3.connect(DB_NAME)
-    connection.row_factory = sqlite3.Row
+    connection = sqlite3.conect(DB_NAME)
+    connection.row_factory = sqlite3.Row
     return connection
 
 

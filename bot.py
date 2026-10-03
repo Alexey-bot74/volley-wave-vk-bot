@@ -1,7 +1,11 @@
 import os
 import requests
 from flask import Flask, request
-from database import init_db
+from database import (
+    init_db,
+    get_trainings,
+    get_registration_count
+)
 
 app = Flask(__name__)
 
@@ -10,6 +14,17 @@ SECRET_KEY = os.getenv("VK_SECRET_KEY")
 VK_TOKEN = os.getenv("VK_TOKEN")
 
 init_db()
+
+
+DAYS = {
+    1: "ПОНЕДЕЛЬНИК",
+    2: "ВТОРНИК",
+    3: "СРЕДА",
+    4: "ЧЕТВЕРГ",
+    5: "ПЯТНИЦА",
+    6: "СУББОТА",
+    7: "ВОСКРЕСЕНЬЕ"
+}
 
 
 def send_message(user_id, message, keyboard=None):
@@ -89,6 +104,56 @@ def main_keyboard():
     }"""
 
 
+def format_schedule():
+    trainings = get_trainings()
+
+    if not trainings:
+        return "📅 Расписание пока пустое."
+
+    lines = [
+        "📅 РАСПИСАНИЕ VOLLEY WAVE",
+        "",
+        "Базовое расписание на неделю:",
+        ""
+    ]
+
+    current_day = None
+
+    for training in trainings:
+
+        day = training["day_of_week"]
+
+        if day != current_day:
+            current_day = day
+
+            lines.append("")
+            lines.append(f"━━ {DAYS.get(day, '')} ━━")
+
+        registered = get_registration_count(training["id"])
+        capacity = training["capacity"]
+
+        available = max(capacity - registered, 0)
+
+        title = training["title"]
+
+        if training["level"]:
+            title += f" — {training['level']}"
+
+        if training["age_group"]:
+            title += f" ({training['age_group']})"
+
+        lines.append("")
+        lines.append(
+            f"🕐 {training['time']} — {title}"
+        )
+
+        lines.append(
+            f"💰 {training['price']}  |  👥 свободно: {available}"
+        )
+
+    return "\n".join(lines)
+
+
 @app.route("/callback", methods=["POST"])
 def callback():
 
@@ -118,6 +183,7 @@ def callback():
         return "ok"
 
     if text == "Привет" or text.lower() == "привет":
+
         send_message(
             user_id,
             "Привет! 👋\n\n"
@@ -127,55 +193,72 @@ def callback():
         )
 
     elif text == "🏐 Записаться":
+
         send_message(
             user_id,
             "🏐 Запись на тренировку\n\n"
-            "Здесь можно будет выбрать подходящую тренировку."
+            "Здесь мы скоро сделаем выбор тренировки "
+            "и запись на неё."
         )
 
     elif text == "📅 Расписание":
+
+        schedule = format_schedule()
+
         send_message(
             user_id,
-            "📅 Расписание\n\n"
-            "Скоро здесь появится актуальное расписание тренировок."
+            schedule,
+            main_keyboard()
         )
 
     elif text == "👤 Мои тренировки":
+
         send_message(
             user_id,
             "👤 Мои тренировки\n\n"
-            "Здесь будут отображаться ваши записи на тренировки."
+            "Здесь будут отображаться ваши записи на тренировки.",
+            main_keyboard()
         )
 
     elif text == "💰 Цены":
+
         send_message(
             user_id,
             "💰 Цены\n\n"
-            "Здесь появится актуальная стоимость тренировок."
+            "Стоимость тренировок указана непосредственно "
+            "в расписании.",
+            main_keyboard()
         )
 
     elif text == "👶 Детские группы":
+
         send_message(
             user_id,
             "👶 Детские группы\n\n"
-            "Здесь появится информация о детских группах."
+            "Здесь появится информация о детских группах.",
+            main_keyboard()
         )
 
     elif text == "📍 Где тренируемся":
+
         send_message(
             user_id,
             "📍 Где тренируемся\n\n"
-            "Здесь появится информация о площадках VOLLEY WAVE."
+            "Здесь появится информация о площадках VOLLEY WAVE.",
+            main_keyboard()
         )
 
     elif text == "❓ Задать вопрос":
+
         send_message(
             user_id,
             "❓ Задать вопрос\n\n"
-            "Напишите свой вопрос следующим сообщением."
+            "Напишите свой вопрос следующим сообщением.",
+            main_keyboard()
         )
 
     else:
+
         send_message(
             user_id,
             "Я пока не понял сообщение 🤔\n\n"
@@ -193,4 +276,8 @@ def home():
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+
+    app.run(
+        host="0.0.0.0",
+        port=port
+    )

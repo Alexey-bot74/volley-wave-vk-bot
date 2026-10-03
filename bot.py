@@ -866,6 +866,7 @@ def show_schedule_categories(user_id):
                         "⬅️ Назад",
                         "secondary",
                     ),
+                ],
             ],
         },
     )

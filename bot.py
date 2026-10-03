@@ -470,34 +470,73 @@ def vk_api(method, **params):
     params["access_token"] = VK_TOKEN
     params["v"] = VK_API_VERSION
 
-    response = requests.post(
-        f"https://api.vk.com/method/{method}",
-        data=params,
-        timeout=15,
+    logger.info(
+        "VK API REQUEST: method=%s params=%s",
+        method,
+        {
+            key: value
+            for key, value in params.items()
+            if key != "access_token"
+        },
     )
 
-    data = response.json()
-
-    if "error" in data:
-        logger.error(
-            "VK API error: %s",
-            data["error"],
+    try:
+        response = requests.post(
+            f"https://api.vk.com/method/{method}",
+            data=params,
+            timeout=15,
         )
 
-    return data
+        logger.info(
+            "VK API HTTP STATUS: %s",
+            response.status_code,
+        )
 
+        response.raise_for_status()
 
-def button(
-    label,
-    color="primary",
-):
-    return {
-        "action": {
-            "type": "text",
-            "label": label,
-        },
-        "color": color,
-    }
+        data = response.json()
+
+        logger.info(
+            "VK API RESPONSE: method=%s response=%s",
+            method,
+            data,
+        )
+
+        if "error" in data:
+            logger.error(
+                "VK API ERROR: method=%s error=%s",
+                method,
+                data["error"],
+            )
+
+        return data
+
+    except requests.RequestException:
+        logger.exception(
+            "VK API REQUEST ERROR: method=%s",
+            method,
+        )
+
+        return {
+            "error": {
+                "error_code": -1,
+                "error_msg": "Ошибка HTTP-запроса к VK API",
+            }
+        }
+
+    except ValueError:
+        logger.exception(
+            "VK API INVALID JSON: method=%s response=%s",
+            method,
+            response.text,
+        )
+
+        return {
+            "error": {
+                "error_code": -2,
+                "error_msg": "VK API вернул некорректный JSON",
+            }
+        }
 
 
 def send_message(

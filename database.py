@@ -1,5 +1,6 @@
 import sqlite3
 
+
 DB_NAME = "volley_wave.db"
 
 
@@ -42,7 +43,9 @@ def init_db():
     ).fetchone()[0]
 
     if count == 0:
+
         schedule = [
+
             (1, "09:00-11:00", "Детская тренировка", "", "9-13 лет", 600, 10),
             (1, "17:00-19:00", "Детская тренировка", "", "11-14 лет", 600, 10),
             (1, "19:00-20:30", "Техничка", "любой уровень", "", 1200, 10),
@@ -64,12 +67,21 @@ def init_db():
             (5, "17:00-18:00", "Детская тренировка", "", "5-10 лет", 600, 10),
             (5, "17:00-19:00", "Детская тренировка", "", "11-14 лет", 600, 10),
             (5, "19:00-20:30", "Техничка", "любой уровень", "", 1200, 10)
+
         ]
 
         connection.executemany(
             """
             INSERT INTO trainings
-            (day_of_week, time, title, level, age_group, price, capacity)
+            (
+                day_of_week,
+                time,
+                title,
+                level,
+                age_group,
+                price,
+                capacity
+            )
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             schedule
@@ -105,3 +117,57 @@ def get_registration_count(training_id):
     connection.close()
 
     return row["count"]
+
+
+def get_registrations(training_id):
+    connection = get_connection()
+
+    rows = connection.execute("""
+        SELECT *
+        FROM registrations
+        WHERE training_id = ?
+        ORDER BY created_at
+    """, (training_id,)).fetchall()
+
+    connection.close()
+
+    return rows
+
+
+def add_registration(
+    training_id,
+    user_id,
+    name=None,
+    phone=None
+):
+    connection = get_connection()
+
+    try:
+
+        connection.execute("""
+            INSERT INTO registrations
+            (
+                training_id,
+                user_id,
+                name,
+                phone
+            )
+            VALUES (?, ?, ?, ?)
+        """, (
+            training_id,
+            user_id,
+            name,
+            phone
+        ))
+
+        connection.commit()
+
+        result = True
+
+    except sqlite3.IntegrityError:
+
+        result = False
+
+    connection.close()
+
+    return result

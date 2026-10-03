@@ -3334,30 +3334,28 @@ def callback():
             )
 
             return "ok"
-
-       object_data = data.get(
-    "object",
-    {},
-)
-
-logger.info(
-    "VK MESSAGE OBJECT: %s",
-    object_data,
-)
-
-message_data = object_data.get(
-    "message",
-    {},
-)
-
-user_id = message_data.get(
-    "from_id"
-)
-
-text = message_data.get(
-    "text",
-    "",
-)
+            
+            object_data = data.get(
+                "object",
+                {},
+            )
+            logger.info(
+                "VK MESSAGE OBJECT: %s",
+                object_data,
+            )
+            message_data = object_data.get(
+                "message",
+                {},
+            )
+            
+            user_id = message_data.get(
+                "from_id"
+            )
+            
+            text = message_data.get(
+                "text",
+                "",
+            )
 
         text = str(
             text or ""

@@ -3,32 +3,27 @@ import sqlite3
 DB_NAME = "volley_wave.db"
 
 BASE_SCHEDULE = [
-    # Понедельник
-    (1, "09:00–11:00", "Дети 9–13 лет", None, "9–13 лет", 10, "600₽"),
-    (1, "17:00–19:00", "Дети 11–14 лет", None, "11–14 лет", 10, "600₽"),
-    (1, "19:00–20:30", "Техничка", "Общий уровень", None, 10, "1000–1200₽"),
+    (1, "09:00-11:00", "Дети 9-13 лет", None, "9-13 лет", 10, "600₽"),
+    (1, "17:00-19:00", "Дети 11-14 лет", None, "11-14 лет", 10, "600₽"),
+    (1, "19:00-20:30", "Техничка", "Общий уровень", None, 10, "1000-1200₽"),
 
-    # Вторник
-    (2, "09:00–11:00", "Взрослая группа", "Общий уровень", None, 8, "1000–1200₽"),
-    (2, "17:00–18:30", "Дети 11–14 лет", None, "11–14 лет", 10, "600₽"),
-    (2, "19:30–21:00", "Женская группа", "Средний и выше", None, 8, "1000–1200₽"),
+    (2, "09:00-11:00", "Взрослая группа", "Общий уровень", None, 8, "1000-1200₽"),
+    (2, "17:00-18:30", "Дети 11-14 лет", None, "11-14 лет", 10, "600₽"),
+    (2, "19:30-21:00", "Женская группа", "Средний и выше", None, 8, "1000-1200₽"),
 
-    # Среда
-    (3, "09:00–11:00", "Дети 9–14 лет", None, "9–14 лет", 10, "600₽"),
-    (3, "17:00–18:00", "Дети 5–9 лет", None, "5–9 лет", 10, "600₽"),
-    (3, "18:00–19:30", "Взрослая группа", "Продвинутый уровень", None, 8, "1000–1200₽"),
-    (3, "19:30–21:00", "Миксты", "Средний и выше", None, 3, "1200₽"),
+    (3, "09:00-11:00", "Дети 9-14 лет", None, "9-14 лет", 10, "600₽"),
+    (3, "17:00-18:00", "Дети 5-9 лет", None, "5-9 лет", 10, "600₽"),
+    (3, "18:00-19:30", "Взрослая группа", "Продвинутый уровень", None, 8, "1000-1200₽"),
+    (3, "19:30-21:00", "Миксты", "Средний и выше", None, 3, "1200₽"),
 
-    # Четверг
-    (4, "09:00–11:00", "Взрослая группа", "Общий уровень", None, 8, "1000–1200₽"),
-    (4, "17:00–19:00", "Дети 11–14 лет", None, "11–14 лет", 10, "600₽"),
-    (4, "19:00–20:30", "Взрослая группа", "Средний уровень", None, 8, "1000–1200₽"),
+    (4, "09:00-11:00", "Взрослая группа", "Общий уровень", None, 8, "1000-1200₽"),
+    (4, "17:00-19:00", "Дети 11-14 лет", None, "11-14 лет", 10, "600₽"),
+    (4, "19:00-20:30", "Взрослая группа", "Средний уровень", None, 8, "1000-1200₽"),
 
-    # Пятница
-    (5, "09:00–11:00", "Дети 9–14 лет", None, "9–14 лет", 10, "600₽"),
-    (5, "17:00–18:00", "Дети 5–10 лет", None, "5–10 лет", 10, "600₽"),
-    (5, "17:00–19:00", "Дети 11–14 лет", None, "11–14 лет", 10, "600₽"),
-    (5, "19:00–20:30", "Техничка", "Общий уровень", None, 10, "1000–1200₽"),
+    (5, "09:00-11:00", "Дети 9-14 лет", None, "9-14 лет", 10, "600₽"),
+    (5, "17:00-18:00", "Дети 5-10 лет", None, "5-10 лет", 10, "600₽"),
+    (5, "17:00-19:00", "Дети 11-14 лет", None, "11-14 лет", 10, "600₽"),
+    (5, "19:00-20:30", "Техничка", "Общий уровень", None, 10, "1000-1200₽"),
 ]
 
 
@@ -62,7 +57,7 @@ def init_db():
             age_group TEXT,
             location TEXT,
             capacity INTEGER NOT NULL DEFAULT 8,
-            price TEXT NOT NULL DEFAULT '600₽',
+            price TEXT NOT NULL DEFAULT '600',
             active INTEGER NOT NULL DEFAULT 1,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
@@ -97,12 +92,6 @@ def init_db():
 
 
 def ensure_base_schedule(connection):
-    """
-    Проверяет наличие базового расписания.
-    Если какого-то занятия нет — добавляет его.
-    Можно безопасно запускать при каждом старте бота.
-    """
-
     cursor = connection.cursor()
     added = 0
 
@@ -113,13 +102,9 @@ def ensure_base_schedule(connection):
             SELECT id
             FROM trainings
             WHERE day_of_week = ?
-              AND time = ?
-              AND title = ?
-        """, (
-            day_of_week,
-            time,
-            title
-        ))
+            AND time = ?
+            AND title = ?
+        """, (day_of_week, time, title))
 
         existing = cursor.fetchone()
 
@@ -153,16 +138,10 @@ def ensure_base_schedule(connection):
     cursor.execute("SELECT COUNT(*) AS count FROM trainings")
     total = cursor.fetchone()["count"]
 
-    print("===================================")
     print("SCHEDULE CHECK")
     print("ADDED:", added)
     print("TOTAL TRAININGS:", total)
-    print("===================================")
 
-
-# =========================
-# USERS
-# =========================
 
 def get_user_by_vk_id(vk_id):
     connection = get_connection()
@@ -185,17 +164,9 @@ def create_user(vk_id, name=None, phone=None):
     cursor = connection.cursor()
 
     cursor.execute("""
-        INSERT INTO users (
-            vk_id,
-            name,
-            phone
-        )
+        INSERT INTO users (vk_id, name, phone)
         VALUES (?, ?, ?)
-    """, (
-        vk_id,
-        name,
-        phone
-    ))
+    """, (vk_id, name, phone))
 
     connection.commit()
 
@@ -211,23 +182,14 @@ def update_user(vk_id, name=None, phone=None):
 
     cursor.execute("""
         UPDATE users
-        SET
-            name = COALESCE(?, name),
+        SET name = COALESCE(?, name),
             phone = COALESCE(?, phone)
         WHERE vk_id = ?
-    """, (
-        name,
-        phone,
-        vk_id
-    ))
+    """, (name, phone, vk_id))
 
     connection.commit()
     connection.close()
 
-
-# =========================
-# TRAININGS
-# =========================
 
 def get_trainings():
     connection = get_connection()
@@ -254,7 +216,7 @@ def get_trainings_by_day(day_of_week):
         SELECT *
         FROM trainings
         WHERE day_of_week = ?
-          AND active = 1
+        AND active = 1
         ORDER BY time
     """, (day_of_week,))
 
@@ -288,7 +250,7 @@ def create_training(
     age_group=None,
     location=None,
     capacity=8,
-    price="600₽"
+    price="600"
 ):
     connection = get_connection()
     cursor = connection.cursor()
@@ -342,7 +304,7 @@ def update_training(training_id, **kwargs):
 
     for field, value in kwargs.items():
         if field in allowed_fields:
-            fields.append(f"{field} = ?")
+            fields.append(field + " = ?")
             values.append(value)
 
     if not fields:
@@ -354,11 +316,7 @@ def update_training(training_id, **kwargs):
     cursor = connection.cursor()
 
     cursor.execute(
-        f"""
-        UPDATE trainings
-        SET {", ".join(fields)}
-        WHERE id = ?
-        """,
+        "UPDATE trainings SET " + ", ".join(fields) + " WHERE id = ?",
         values
     )
 
@@ -370,10 +328,6 @@ def deactivate_training(training_id):
     update_training(training_id, active=0)
 
 
-# =========================
-# REGISTRATIONS
-# =========================
-
 def get_registration_count(training_id):
     connection = get_connection()
     cursor = connection.cursor()
@@ -382,7 +336,7 @@ def get_registration_count(training_id):
         SELECT COUNT(*) AS count
         FROM registrations
         WHERE training_id = ?
-          AND status = 'registered'
+        AND status = 'registered'
     """, (training_id,))
 
     count = cursor.fetchone()["count"]
@@ -414,10 +368,7 @@ def register_user(training_id, user_id):
                 status
             )
             VALUES (?, ?, 'registered')
-        """, (
-            training_id,
-            user_id
-        ))
+        """, (training_id, user_id))
 
         connection.commit()
 
@@ -439,12 +390,9 @@ def cancel_registration(training_id, user_id):
         UPDATE registrations
         SET status = 'cancelled'
         WHERE training_id = ?
-          AND user_id = ?
-          AND status = 'registered'
-    """, (
-        training_id,
-        user_id
-    ))
+        AND user_id = ?
+        AND status = 'registered'
+    """, (training_id, user_id))
 
     connection.commit()
     connection.close()
@@ -468,7 +416,7 @@ def get_user_registrations(user_id):
         JOIN trainings
             ON trainings.id = registrations.training_id
         WHERE registrations.user_id = ?
-          AND registrations.status = 'registered'
+        AND registrations.status = 'registered'
         ORDER BY trainings.day_of_week, trainings.time
     """, (user_id,))
 
@@ -493,7 +441,7 @@ def get_training_participants(training_id):
         JOIN users
             ON users.id = registrations.user_id
         WHERE registrations.training_id = ?
-          AND registrations.status = 'registered'
+        AND registrations.status = 'registered'
         ORDER BY registrations.created_at
     """, (training_id,))
 
@@ -503,26 +451,16 @@ def get_training_participants(training_id):
     return participants
 
 
-# =========================
-# SETTINGS
-# =========================
-
 def set_setting(key, value):
     connection = get_connection()
     cursor = connection.cursor()
 
     cursor.execute("""
-        INSERT INTO settings (
-            setting_key,
-            setting_value
-        )
+        INSERT INTO settings (setting_key, setting_value)
         VALUES (?, ?)
         ON CONFLICT(setting_key)
         DO UPDATE SET setting_value = excluded.setting_value
-    """, (
-        key,
-        value
-    ))
+    """, (key, value))
 
     connection.commit()
     connection.close()
@@ -545,3 +483,4 @@ def get_setting(key, default=None):
         return default
 
     return row["setting_value"]
+

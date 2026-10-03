@@ -17,16 +17,11 @@ VK_TOKEN = os.getenv("VK_TOKEN")
 
 init_db()
 
-
-# =========================
-# ПРОВЕРКА БАЗЫ
-# =========================
+print("===================================")
+print("DATABASE CHECK")
 
 try:
     all_trainings = get_trainings()
-
-    print("===================================")
-    print("DATABASE CHECK")
     print("TRAININGS COUNT:", len(all_trainings))
 
     for training in all_trainings:
@@ -39,15 +34,11 @@ try:
             training["capacity"]
         )
 
-    print("===================================")
-
 except Exception as error:
     print("DATABASE ERROR:", error)
 
+print("===================================")
 
-# =========================
-# ДНИ НЕДЕЛИ
-# =========================
 
 DAYS = {
     1: "ПОНЕДЕЛЬНИК",
@@ -60,21 +51,7 @@ DAYS = {
 }
 
 
-DAY_NUMBERS = {
-    "Понедельник": 1,
-    "Вторник": 2,
-    "Среда": 3,
-    "Четверг": 4,
-    "Пятница": 5
-}
-
-
-# =========================
-# ОТПРАВКА СООБЩЕНИЯ
-# =========================
-
 def send_message(user_id, message, keyboard=None):
-
     url = "https://api.vk.com/method/messages.send"
 
     params = {
@@ -93,176 +70,219 @@ def send_message(user_id, message, keyboard=None):
     print("VK RESPONSE:", response.text)
 
 
-# =========================
-# ГЛАВНОЕ МЕНЮ
-# =========================
+def make_keyboard(buttons):
+    return json.dumps(
+        {
+            "one_time": False,
+            "buttons": buttons
+        },
+        ensure_ascii=False
+    )
+
 
 def main_keyboard():
-
-    return json.dumps({
-        "one_time": False,
-        "buttons": [
-            [
-                {
-                    "action": {
-                        "type": "text",
-                        "label": "🏐 Записаться"
-                    }
-                },
-                {
-                    "action": {
-                        "type": "text",
-                        "label": "📅 Расписание"
-                    }
-                }
-            ],
-            [
-                {
-                    "action": {
-                        "type": "text",
-                        "label": "👤 Мои тренировки"
-                    }
-                },
-                {
-                    "action": {
-                        "type": "text",
-                        "label": "💰 Цены"
-                    }
-                }
-            ],
-            [
-                {
-                    "action": {
-                        "type": "text",
-                        "label": "👶 Детские группы"
-                    }
-                },
-                {
-                    "action": {
-                        "type": "text",
-                        "label": "📍 Где тренируемся"
-                    }
-                }
-            ],
-            [
-                {
-                    "action": {
-                        "type": "text",
-                        "label": "❓ Задать вопрос"
-                    }
-                ]
-            ]
-        ]
-    }, ensure_ascii=False)
-
-
-# =========================
-# КНОПКИ ДНЕЙ
-# =========================
-
-def days_keyboard():
-
-    return json.dumps({
-        "one_time": False,
-        "buttons": [
-            [
-                {
-                    "action": {
-                        "type": "text",
-                        "label": "Понедельник"
-                    }
-                },
-                {
-                    "action": {
-                        "type": "text",
-                        "label": "Вторник"
-                    }
-                }
-            ],
-            [
-                {
-                    "action": {
-                        "type": "text",
-                        "label": "Среда"
-                    }
-                },
-                {
-                    "action": {
-                        "type": "text",
-                        "label": "Четверг"
-                    }
-                }
-            ],
-            [
-                {
-                    "action": {
-                        "type": "text",
-                        "label": "Пятница"
-                    }
-                }
-            ],
-            [
-                {
-                    "action": {
-                        "type": "text",
-                        "label": "⬅️ Назад"
-                    }
-                }
-            ]
-        ]
-    }, ensure_ascii=False)
-
-
-# =========================
-# КНОПКИ ТРЕНИРОВОК
-# =========================
-
-def trainings_keyboard(trainings):
-
-    buttons = []
-
-    for training in trainings:
-
-        title = training["title"]
-
-        if training["level"]:
-            title += f" — {training['level']}"
-
-        if training["age_group"]:
-            title += f" ({training['age_group']})"
-
-        label = f"{training['id']}. {training['time']} — {title}"
-
-        buttons.append([
+    buttons = [
+        [
             {
                 "action": {
                     "type": "text",
-                    "label": label[:40]
+                    "label": "🏐 Записаться"
+                }
+            },
+            {
+                "action": {
+                    "type": "text",
+                    "label": "📅 Расписание"
                 }
             }
-        ])
-
-    buttons.append([
-        {
-            "action": {
-                "type": "text",
-                "label": "⬅️ Назад к дням"
+        ],
+        [
+            {
+                "action": {
+                    "type": "text",
+                    "label": "👤 Мои тренировки"
+                }
+            },
+            {
+                "action": {
+                    "type": "text",
+                    "label": "💰 Цены"
+                }
             }
-        }
-    ])
+        ],
+        [
+            {
+                "action": {
+                    "type": "text",
+                    "label": "👶 Детские группы"
+                }
+            },
+            {
+                "action": {
+                    "type": "text",
+                    "label": "📍 Где тренируемся"
+                }
+            }
+        ],
+        [
+            {
+                "action": {
+                    "type": "text",
+                    "label": "❓ Задать вопрос"
+                }
+            }
+        ]
+    ]
 
-    return json.dumps({
-        "one_time": False,
-        "buttons": buttons
-    }, ensure_ascii=False)
+    return make_keyboard(buttons)
 
 
-# =========================
-# ФОРМАТИРОВАНИЕ РАСПИСАНИЯ
-# =========================
+def days_keyboard():
+    buttons = [
+        [
+            {
+                "action": {
+                    "type": "text",
+                    "label": "Понедельник"
+                }
+            },
+            {
+                "action": {
+                    "type": "text",
+                    "label": "Вторник"
+                }
+            }
+        ],
+        [
+            {
+                "action": {
+                    "type": "text",
+                    "label": "Среда"
+                }
+            },
+            {
+                "action": {
+                    "type": "text",
+                    "label": "Четверг"
+                }
+            }
+        ],
+        [
+            {
+                "action": {
+                    "type": "text",
+                    "label": "Пятница"
+                }
+            }
+        ],
+        [
+            {
+                "action": {
+                    "type": "text",
+                    "label": "⬅️ Назад"
+                }
+            }
+        ]
+    ]
+
+    return make_keyboard(buttons)
+
+
+def trainings_keyboard(trainings):
+    buttons = []
+
+    for training in trainings:
+        label = f"{training['id']}. {training['time']}"
+
+        buttons.append(
+            [
+                {
+                    "action": {
+                        "type": "text",
+                        "label": label
+                    }
+                }
+            ]
+        )
+
+    buttons.append(
+        [
+            {
+                "action": {
+                    "type": "text",
+                    "label": "⬅️ Назад к дням"
+                }
+            }
+        ]
+    )
+
+    return make_keyboard(buttons)
+
+
+def get_day_number(text):
+    days = {
+        "Понедельник": 1,
+        "Вторник": 2,
+        "Среда": 3,
+        "Четверг": 4,
+        "Пятница": 5
+    }
+
+    return days.get(text)
+
+
+def get_trainings_by_day(day_number):
+    trainings = get_trainings()
+
+    return [
+        training
+        for training in trainings
+        if training["day_of_week"] == day_number
+    ]
+
+
+def format_training_title(training):
+    title = training["title"]
+
+    if training["level"]:
+        title += f" — {training['level']}"
+
+    if training["age_group"]:
+        title += f" ({training['age_group']})"
+
+    return title
+
+
+def get_training_by_id(training_id):
+    trainings = get_trainings()
+
+    for training in trainings:
+        if training["id"] == training_id:
+            return training
+
+    return None
+
+
+def get_training_info(training):
+    registered = get_registration_count(training["id"])
+    capacity = training["capacity"]
+    available = max(capacity - registered, 0)
+
+    title = format_training_title(training)
+
+    text = (
+        f"🏐 {title}\n\n"
+        f"🕐 Время: {training['time']}\n"
+        f"💰 Стоимость: {training['price']} ₽\n"
+        f"👥 Мест свободно: {available} из {capacity}\n\n"
+        f"👤 Сейчас записано: {registered}\n\n"
+        f"Пока здесь будет информация о записи."
+    )
+
+    return text
+
 
 def format_schedule():
-
     trainings = get_trainings()
 
     print("FORMAT SCHEDULE - TRAININGS:", len(trainings))
@@ -279,36 +299,19 @@ def format_schedule():
     current_day = None
 
     for training in trainings:
-
         day = training["day_of_week"]
 
         if day != current_day:
-
             current_day = day
 
             lines.append("")
-            lines.append(
-                f"━━ {DAYS.get(day, '')} ━━"
-            )
+            lines.append(f"━━ {DAYS.get(day, '')} ━━")
 
-        registered = get_registration_count(
-            training["id"]
-        )
-
+        registered = get_registration_count(training["id"])
         capacity = training["capacity"]
+        available = max(capacity - registered, 0)
 
-        available = max(
-            capacity - registered,
-            0
-        )
-
-        title = training["title"]
-
-        if training["level"]:
-            title += f" — {training['level']}"
-
-        if training["age_group"]:
-            title += f" ({training['age_group']})"
+        title = format_training_title(training)
 
         lines.append("")
         lines.append(
@@ -323,65 +326,6 @@ def format_schedule():
     return "\n".join(lines)
 
 
-# =========================
-# ИНФОРМАЦИЯ О ТРЕНИРОВКЕ
-# =========================
-
-def get_training_info(training_id):
-
-    trainings = get_trainings()
-
-    training = None
-
-    for item in trainings:
-
-        if item["id"] == training_id:
-            training = item
-            break
-
-    if not training:
-        return None
-
-    registered = get_registration_count(
-        training_id
-    )
-
-    capacity = training["capacity"]
-
-    available = max(
-        capacity - registered,
-        0
-    )
-
-    title = training["title"]
-
-    if training["level"]:
-        title += f" — {training['level']}"
-
-    if training["age_group"]:
-        title += f" ({training['age_group']})"
-
-    text = (
-        "🏐 ТРЕНИРОВКА\n\n"
-        f"🕐 Время: {training['time']}\n"
-        f"🏐 {title}\n"
-        f"💰 Стоимость: {training['price']} ₽\n"
-        f"👥 Мест всего: {capacity}\n"
-        f"🟢 Свободно: {available}\n\n"
-    )
-
-    text += (
-        "👤 Уже записаны:\n"
-        "Пока записей нет."
-    )
-
-    return text
-
-
-# =========================
-# CALLBACK
-# =========================
-
 @app.route("/callback", methods=["POST"])
 def callback():
 
@@ -389,24 +333,19 @@ def callback():
 
     print("VK EVENT:", data)
 
-    # Проверка секретного ключа
     if SECRET_KEY and data.get("secret") != SECRET_KEY:
         return "invalid secret", 403
 
-    # Подтверждение сервера VK
     if data.get("type") == "confirmation":
         return CONFIRMATION_TOKEN or ""
 
-    # Нас интересуют только новые сообщения
     if data.get("type") != "message_new":
         return "ok"
 
     obj = data.get("object", {})
-
     message = obj.get("message", {})
 
     user_id = message.get("from_id")
-
     text = message.get("text", "").strip()
 
     print("USER ID:", user_id)
@@ -420,12 +359,12 @@ def callback():
     # ПРИВЕТСТВИЕ
     # =========================
 
-    if text.lower() == "привет":
+    if text == "Привет" or text.lower() == "привет":
 
         send_message(
             user_id,
             "Привет! 👋\n\n"
-            "Добро пожаловать в VOLLEY WAVE 🏐\n\n"
+            "Добро пожаловать в VOLLEY WAVE 🏐\n"
             "Выберите нужный раздел:",
             main_keyboard()
         )
@@ -449,44 +388,63 @@ def callback():
     # ВЫБОР ДНЯ
     # =========================
 
-    elif text in DAY_NUMBERS:
+    elif text in [
+        "Понедельник",
+        "Вторник",
+        "Среда",
+        "Четверг",
+        "Пятница"
+    ]:
 
-        selected_day = DAY_NUMBERS[text]
-
-        trainings = [
-            training
-            for training in get_trainings()
-            if training["day_of_week"] == selected_day
-        ]
+        day_number = get_day_number(text)
+        trainings = get_trainings_by_day(day_number)
 
         if not trainings:
 
             send_message(
                 user_id,
-                "В этот день тренировок пока нет.",
+                "На этот день тренировок пока нет.",
                 days_keyboard()
             )
 
         else:
 
+            message_text = (
+                f"🏐 {text}\n\n"
+                "Выберите тренировку:"
+            )
+
             send_message(
                 user_id,
-                f"🏐 {text.upper()}\n\n"
-                "Выберите тренировку:",
+                message_text,
                 trainings_keyboard(trainings)
             )
 
 
     # =========================
-    # НАЗАД К ДНЯМ
+    # ВОЗВРАТ К ДНЯМ
     # =========================
 
     elif text == "⬅️ Назад к дням":
 
         send_message(
             user_id,
-            "🏐 Выберите день:",
+            "🏐 Запись на тренировку\n\n"
+            "Выберите день:",
             days_keyboard()
+        )
+
+
+    # =========================
+    # НАЗАД В ГЛАВНОЕ МЕНЮ
+    # =========================
+
+    elif text == "⬅️ Назад":
+
+        send_message(
+            user_id,
+            "Главное меню:",
+            main_keyboard()
         )
 
 
@@ -494,23 +452,20 @@ def callback():
     # ВЫБОР ТРЕНИРОВКИ
     # =========================
 
-    elif text[:1].isdigit() and "." in text:
+    elif "." in text and text.split(".")[0].isdigit():
 
         try:
+            training_id = int(text.split(".")[0])
 
-            training_id = int(
-                text.split(".")[0]
-            )
+            training = get_training_by_id(training_id)
 
-            training_info = get_training_info(
-                training_id
-            )
+            if training:
 
-            if training_info:
+                info = get_training_info(training)
 
                 send_message(
                     user_id,
-                    training_info,
+                    info,
                     main_keyboard()
                 )
 
@@ -524,14 +479,11 @@ def callback():
 
         except Exception as error:
 
-            print(
-                "TRAINING SELECTION ERROR:",
-                error
-            )
+            print("TRAINING SELECTION ERROR:", error)
 
             send_message(
                 user_id,
-                "Не удалось выбрать тренировку.",
+                "Произошла ошибка при выборе тренировки.",
                 main_keyboard()
             )
 
@@ -574,7 +526,7 @@ def callback():
         send_message(
             user_id,
             "💰 Цены\n\n"
-            "Стоимость тренировок указана в расписании.",
+            "Стоимость каждой тренировки указана в расписании.",
             main_keyboard()
         )
 
@@ -637,28 +589,16 @@ def callback():
     return "ok"
 
 
-# =========================
-# ГЛАВНАЯ СТРАНИЦА
-# =========================
-
 @app.route("/", methods=["GET"])
 def home():
-
     return "VOLLEY WAVE VK BOT IS RUNNING"
 
 
-# =========================
-# ЗАПУСК
-# =========================
-
 if __name__ == "__main__":
 
-    port = int(
-        os.getenv("PORT", 10000)
-    )
+    port = int(os.getenv("PORT", 10000))
 
     app.run(
         host="0.0.0.0",
         port=port
     )
-

@@ -3356,10 +3356,10 @@ def callback():
                 "text",
                 "",
             )
-
-        text = str(
-            text or ""
-        ).strip()
+            
+            text = str(
+                text or ""
+            ).strip()
 
         logger.info(
             "VK MESSAGE: user_id=%s text=%r",

@@ -3287,7 +3287,6 @@ def handle_message(
     methods=["POST"],
 )
 def callback():
-
     try:
         data = request.get_json(
             silent=True
@@ -3313,9 +3312,7 @@ def callback():
             event_type,
         )
 
-        # Подтверждение Callback API VK
         if event_type == "confirmation":
-
             logger.info(
                 "VK CALLBACK: confirmation"
             )
@@ -3325,41 +3322,41 @@ def callback():
                 or ""
             )
 
-        # Нас интересуют только новые сообщения
         if event_type != "message_new":
-
             logger.info(
                 "VK CALLBACK: событие пропущено: %s",
                 event_type,
             )
 
             return "ok"
-            
-            object_data = data.get(
-                "object",
-                {},
-            )
-            logger.info(
-                "VK MESSAGE OBJECT: %s",
-                object_data,
-            )
-            message_data = object_data.get(
-                "message",
-                {},
-            )
-            
-            user_id = message_data.get(
-                "from_id"
-            )
-            
-            text = message_data.get(
-                "text",
-                "",
-            )
-            
-            text = str(
-                text or ""
-            ).strip()
+
+        object_data = data.get(
+            "object",
+            {},
+        )
+
+        logger.info(
+            "VK MESSAGE OBJECT: %s",
+            object_data,
+        )
+
+        message_data = object_data.get(
+            "message",
+            {},
+        )
+
+        user_id = message_data.get(
+            "from_id"
+        )
+
+        text = message_data.get(
+            "text",
+            "",
+        )
+
+        text = str(
+            text or ""
+        ).strip()
 
         logger.info(
             "VK MESSAGE: user_id=%s text=%r",
@@ -3368,89 +3365,56 @@ def callback():
         )
 
         if not user_id:
-
             logger.error(
                 "VK MESSAGE: отсутствует from_id"
             )
 
             return "ok"
 
-        handle_message(
-            int(user_id),
-            text,
-        )
+        try:
+            handle_message(
+                int(user_id),
+                text,
+            )
 
-        logger.info(
-            "VK MESSAGE HANDLED: user_id=%s text=%r",
-            user_id,
-            text,
-        )
+            logger.info(
+                "VK MESSAGE HANDLED: user_id=%s text=%r",
+                user_id,
+                text,
+            )
+
+        except Exception:
+            logger.exception(
+                "Ошибка обработки сообщения: "
+                "user_id=%s text=%r",
+                user_id,
+                text,
+            )
+
+            try:
+                send_message(
+                    int(user_id),
+                    "⚠️ Произошла техническая ошибка.\n"
+                    "Попробуйте ещё раз.",
+                    main_keyboard(
+                        int(user_id)
+                    ),
+                )
+
+            except Exception:
+                logger.exception(
+                    "Не удалось отправить сообщение "
+                    "об ошибке"
+                )
 
         return "ok"
 
     except Exception:
-
         logger.exception(
             "КРИТИЧЕСКАЯ ОШИБКА CALLBACK"
         )
 
         return "ok"
-    event_type = data.get(
-        "type"
-    )
-
-    if event_type == "confirmation":
-        return (
-            VK_CONFIRMATION_TOKEN
-            or ""
-        )
-
-    if event_type != "message_new":
-        return "ok"
-
-    object_data = data.get(
-        "object",
-        {},
-    )
-
-    user_id = object_data.get(
-        "from_id"
-    )
-
-    text = object_data.get(
-        "text",
-        "",
-    )
-
-    if not user_id:
-        return "ok"
-
-    try:
-        handle_message(
-            user_id,
-            text,
-        )
-
-    except Exception:
-        logger.exception(
-            "Ошибка обработки сообщения"
-        )
-
-        try:
-            send_message(
-                user_id,
-                "⚠️ Произошла техническая ошибка.\n"
-                "Попробуйте ещё раз.",
-                main_keyboard(user_id),
-            )
-
-        except Exception:
-            logger.exception(
-                "Не удалось отправить сообщение "
-                "об ошибке"
-            )
-
-    return "ok"
 
 
 # ============================================================

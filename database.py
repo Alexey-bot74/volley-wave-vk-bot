@@ -1,113 +1,198 @@
 import sqlite3
 from datetime import datetime
+from pathlib import Path
 
-DB_NAME = "volley_wave.db"
 
+# ============================================================
+# НАСТРОЙКИ
+# ============================================================
+
+DB_PATH = Path(__file__).resolve().parent / "volley_wave.db"
+
+
+# ============================================================
+# ПОДКЛЮЧЕНИЕ
+# ============================================================
 
 def get_connection():
-    connection = sqlite3.connect(DB_NAME)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys = ON")
-    return connection
+    conn = sqlite3.connect(
+        DB_PATH,
+        timeout=30,
+    )
 
+    conn.row_factory = sqlite3.Row
+
+    conn.execute(
+        "PRAGMA foreign_keys = ON"
+    )
+
+    return conn
+
+
+# ============================================================
+# ИНИЦИАЛИЗАЦИЯ
+# ============================================================
 
 def init_db():
-    connection = get_connection()
+    conn = get_connection()
+    cursor = conn.cursor()
 
-    # =========================
+    # --------------------------------------------------------
     # USERS
-    # =========================
+    # --------------------------------------------------------
 
-    connection.execute("""
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL UNIQUE,
-            name TEXT,
-            phone TEXT,
+            vk_id INTEGER UNIQUE NOT NULL,
+            first_name TEXT,
+            last_name TEXT,
             is_blocked INTEGER NOT NULL DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
         )
-    """)
+        """
+    )
 
-    # =========================
-    # TRAININGS
-    # =========================
+    # --------------------------------------------------------
+    # TRAINING TEMPLATES
+    #
+    # Шаблон повторяющегося расписания.
+    # Например:
+    # Понедельник 17:00-19:00, дети 11-14.
+    #
+    # Из шаблона создаются реальные тренировки
+    # с конкретными датами.
+    # --------------------------------------------------------
 
-    connection.execute("""
-        CREATE TABLE IF NOT EXISTS trainings (
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS training_templates (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            day_of_week INTEGER NOT NULL,
-            time TEXT NOT NULL,
-            title TEXT NOT NULL,
-            level TEXT,
-            age_group TEXT,
-            price INTEGER NOT NULL,
-            capacity INTEGER NOT NULL,
 
-            category TEXT,
+            weekday INTEGER NOT NULL,
+            start_time TEXT NOT NULL,
+            end_time TEXT NOT NULL,
+
+            title TEXT NOT NULL,
+            category TEXT NOT NULL,
+
+            age_group TEXT,
+            level TEXT,
             format TEXT,
             coach TEXT,
 
-            status TEXT NOT NULL DEFAULT 'active',
+            capacity INTEGER NOT NULL DEFAULT 10,
+            price INTEGER NOT NULL DEFAULT 0,
 
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            location TEXT,
+
+            is_active INTEGER NOT NULL DEFAULT 1,
+
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
         )
-    """)
+        """
+    )
 
-    # =========================
+    # --------------------------------------------------------
+    # TRAININGS
+    #
+    # Конкретная тренировка.
+    #
+    # Каждый экземпляр имеет свой номер и дату.
+    # --------------------------------------------------------
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS trainings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            training_number INTEGER UNIQUE,
+
+            training_date TEXT NOT NULL,
+            weekday INTEGER NOT NULL,
+
+            start_time TEXT NOT NULL,
+            end_time TEXT NOT NULL,
+
+            title TEXT NOT NULL,
+            category TEXT NOT NULL,
+
+            age_group TEXT,
+            level TEXT,
+            format TEXT,
+            coach TEXT,
+
+            capacity INTEGER NOT NULL DEFAULT 10,
+            price INTEGER NOT NULL DEFAULT 0,
+
+            location TEXT,
+
+            status TEXT NOT NULL DEFAULT 'scheduled',
+
+            template_id INTEGER,
+
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+
+            FOREIGN KEY (
+                template_id
+            )
+            REFERENCES training_templates(id)
+            ON DELETE SET NULL
+        )
+        """
+    )
+
+    # --------------------------------------------------------
     # REGISTRATIONS
-    # =========================
+    #
+    # Запись пользователя на конкретную тренировку.
+    # --------------------------------------------------------
 
-    connection.execute("""
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS registrations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+
             training_id INTEGER NOT NULL,
             user_id INTEGER NOT NULL,
-            name TEXT,
-            phone TEXT,
 
-            status TEXT NOT NULL DEFAULT 'active',
+            status TEXT NOT NULL DEFAULT 'registered',
 
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            cancelled_at TIMESTAMP,
+            registered_at TEXT NOT NULL,
+            cancelled_at TEXT,
+
             cancellation_reason TEXT,
 
-            UNIQUE(training_id, user_id),
+            FOREIGN KEY (
+                training_id
+            )
+            REFERENCES trainings(id)
+            ON DELETE CASCADE,
 
-            FOREIGN KEY(training_id)
-                REFERENCES trainings(id)
-                ON DELETE CASCADE
+            FOREIGN KEY (
+                user_id
+            )
+            REFERENCES users(id)
+            ON DELETE CASCADE,
+
+            UNIQUE (
+                training_id,
+                user_id
+            )
         )
-    """)
+        """
+    )
 
-    # =========================
-    # ATTENDANCE
-    # =========================
-
-    connection.execute("""
-        CREATE TABLE IF NOT EXISTS attendance (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-            registration_id INTEGER NOT NULL UNIQUE,
-
-            status TEXT NOT NULL DEFAULT 'not_marked',
-
-            marked_at TIMESTAMP,
-            marked_by INTEGER,
-
-            FOREIGN KEY(registration_id)
-                REFERENCES registrations(id)
-                ON DELETE CASCADE
-        )
-    """)
-
-    # =========================
+    # --------------------------------------------------------
     # WAITLIST
-    # =========================
+    # --------------------------------------------------------
 
-    connection.execute("""
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS waitlist (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
 
@@ -118,22 +203,61 @@ def init_db():
 
             status TEXT NOT NULL DEFAULT 'waiting',
 
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            notified_at TIMESTAMP,
+            created_at TEXT NOT NULL,
 
-            UNIQUE(training_id, user_id),
+            FOREIGN KEY (
+                training_id
+            )
+            REFERENCES trainings(id)
+            ON DELETE CASCADE,
 
-            FOREIGN KEY(training_id)
-                REFERENCES trainings(id)
-                ON DELETE CASCADE
+            FOREIGN KEY (
+                user_id
+            )
+            REFERENCES users(id)
+            ON DELETE CASCADE,
+
+            UNIQUE (
+                training_id,
+                user_id
+            )
         )
-    """)
+        """
+    )
 
-    # =========================
+    # --------------------------------------------------------
+    # ATTENDANCE
+    # --------------------------------------------------------
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS attendance (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            registration_id INTEGER NOT NULL,
+
+            status TEXT NOT NULL DEFAULT 'unknown',
+
+            marked_by INTEGER,
+            marked_at TEXT,
+
+            comment TEXT,
+
+            FOREIGN KEY (
+                registration_id
+            )
+            REFERENCES registrations(id)
+            ON DELETE CASCADE
+        )
+        """
+    )
+
+    # --------------------------------------------------------
     # PAYMENTS
-    # =========================
+    # --------------------------------------------------------
 
-    connection.execute("""
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS payments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
 
@@ -144,773 +268,1150 @@ def init_db():
 
             status TEXT NOT NULL DEFAULT 'pending',
 
-            method TEXT,
+            payment_method TEXT,
             external_id TEXT,
 
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            paid_at TIMESTAMP,
+            created_at TEXT NOT NULL,
+            paid_at TEXT,
 
-            FOREIGN KEY(training_id)
-                REFERENCES trainings(id)
-                ON DELETE SET NULL
+            FOREIGN KEY (
+                user_id
+            )
+            REFERENCES users(id)
+            ON DELETE CASCADE,
+
+            FOREIGN KEY (
+                training_id
+            )
+            REFERENCES trainings(id)
+            ON DELETE SET NULL
         )
-    """)
+        """
+    )
 
-    # =========================
-    # ADMIN LOG
-    # =========================
+    # --------------------------------------------------------
+    # ADMIN LOGS
+    # --------------------------------------------------------
 
-    connection.execute("""
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS admin_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
 
-            admin_id INTEGER NOT NULL,
+            admin_vk_id INTEGER NOT NULL,
 
             action TEXT NOT NULL,
-            entity TEXT,
+
+            entity_type TEXT,
             entity_id INTEGER,
 
             details TEXT,
 
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TEXT NOT NULL
         )
-    """)
+        """
+    )
 
-    # =========================
-    # MIGRATION OF OLD DATABASE
-    # =========================
+    # --------------------------------------------------------
+    # NOTIFICATIONS
+    #
+    # Чтобы позже не отправлять повторно
+    # напоминания одному и тому же пользователю.
+    # --------------------------------------------------------
 
-    migrate_trainings_table(connection)
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
 
-    # =========================
-    # INITIAL SCHEDULE
-    # =========================
+            user_id INTEGER NOT NULL,
+            training_id INTEGER,
 
-    count = connection.execute(
-        "SELECT COUNT(*) FROM trainings"
-    ).fetchone()[0]
+            notification_type TEXT NOT NULL,
 
-    if count == 0:
-        schedule = [
-            (
-                1,
-                "09:00-11:00",
-                "Детская тренировка",
-                "",
-                "9-13 лет",
-                600,
-                10,
-                "children",
-                "Группа",
-                "Алексей"
-            ),
-            (
-                1,
-                "17:00-19:00",
-                "Детская тренировка",
-                "средний",
-                "11-14 лет",
-                600,
-                10,
-                "children",
-                "Группа",
-                "Алексей"
-            ),
-            (
-                1,
-                "19:00-20:30",
-                "Техничка",
-                "техническая",
-                "18+",
-                1200,
-                10,
-                "adults",
-                "Группа",
-                "Алексей"
-            ),
+            scheduled_for TEXT NOT NULL,
+            sent_at TEXT,
 
-            (
-                2,
-                "09:00-11:00",
-                "Общая тренировка",
-                "любой уровень",
-                "18+",
-                1200,
-                8,
-                "adults",
-                "Группа",
-                "Алексей"
-            ),
-            (
-                2,
-                "17:00-18:30",
-                "Детская тренировка",
-                "средний",
-                "11-14 лет",
-                600,
-                10,
-                "children",
-                "Группа",
-                "Алексей"
-            ),
-            (
-                2,
-                "19:30-21:00",
-                "Женская тренировка",
-                "средний+",
-                "18+",
-                1200,
-                8,
-                "adults",
-                "Женская группа",
-                "Алексей"
-            ),
+            status TEXT NOT NULL DEFAULT 'pending',
 
-            (
-                3,
-                "09:00-11:00",
-                "Детская тренировка",
-                "начальный / средний",
-                "9-14 лет",
-                600,
-                10,
-                "children",
-                "Группа",
-                "Алексей"
-            ),
-            (
-                3,
-                "17:00-18:00",
-                "Детская тренировка",
-                "начальный",
-                "5-9 лет",
-                600,
-                10,
-                "children",
-                "Группа",
-                "Ксения"
-            ),
-            (
-                3,
-                "18:00-19:30",
-                "Тренировка",
-                "продвинутый",
-                "18+",
-                1200,
-                8,
-                "adults",
-                "Группа",
-                "Алексей"
-            ),
-            (
-                3,
-                "19:30-21:00",
-                "MIXED",
-                "средний+",
-                "18+",
-                1200,
-                8,
-                "adults",
-                "MIXED",
-                "Алексей"
-            ),
+            created_at TEXT NOT NULL,
 
-            (
-                4,
-                "09:00-11:00",
-                "Общая тренировка",
-                "любой уровень",
-                "18+",
-                1200,
-                8,
-                "adults",
-                "Группа",
-                "Алексей"
-            ),
-            (
-                4,
-                "17:00-19:00",
-                "Детская тренировка",
-                "средний",
-                "11-14 лет",
-                600,
-                10,
-                "children",
-                "Группа",
-                "Алексей"
-            ),
-            (
-                4,
-                "19:00-20:30",
-                "Тренировка",
-                "средний",
-                "18+",
-                1200,
-                8,
-                "adults",
-                "Группа",
-                "Алексей"
-            ),
-
-            (
-                5,
-                "09:00-11:00",
-                "Детская тренировка",
-                "начальный / средний",
-                "9-14 лет",
-                600,
-                10,
-                "children",
-                "Группа",
-                "Алексей"
-            ),
-            (
-                5,
-                "17:00-18:00",
-                "Детская тренировка",
-                "начальный",
-                "5-10 лет",
-                600,
-                10,
-                "children",
-                "Группа",
-                "Ксения"
-            ),
-            (
-                5,
-                "17:00-19:00",
-                "Детская тренировка",
-                "средний",
-                "11-14 лет",
-                600,
-                10,
-                "children",
-                "Группа",
-                "Алексей"
-            ),
-            (
-                5,
-                "19:00-20:30",
-                "Техничка",
-                "техническая",
-                "18+",
-                1200,
-                10,
-                "adults",
-                "Группа",
-                "Алексей"
+            FOREIGN KEY (
+                user_id
             )
-        ]
+            REFERENCES users(id)
+            ON DELETE CASCADE,
 
-        connection.executemany(
-            """
-            INSERT INTO trainings
-            (
-                day_of_week,
-                time,
-                title,
-                level,
-                age_group,
-                price,
-                capacity,
-                category,
-                format,
-                coach
+            FOREIGN KEY (
+                training_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            schedule
+            REFERENCES trainings(id)
+            ON DELETE CASCADE
         )
+        """
+    )
 
-    connection.commit()
-    connection.close()
+    # --------------------------------------------------------
+    # ИНДЕКСЫ
+    # --------------------------------------------------------
+
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS
+        idx_trainings_date
+        ON trainings(training_date)
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS
+        idx_trainings_status
+        ON trainings(status)
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS
+        idx_registrations_training
+        ON registrations(training_id)
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS
+        idx_registrations_user
+        ON registrations(user_id)
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS
+        idx_waitlist_training
+        ON waitlist(training_id)
+        """
+    )
+
+    conn.commit()
+    conn.close()
 
 
-def migrate_trainings_table(connection):
-    """
-    Добавляет новые поля в уже существующую базу.
+# ============================================================
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# ============================================================
 
-    Старые данные не удаляются.
-    """
+def now_text():
+    return datetime.now().isoformat(
+        timespec="seconds"
+    )
 
-    columns = connection.execute(
-        "PRAGMA table_info(trainings)"
-    ).fetchall()
 
-    existing_columns = {
-        column["name"]
-        for column in columns
-    }
+def row_to_dict(row):
+    if row is None:
+        return None
 
-    new_columns = {
-        "category": "TEXT",
-        "format": "TEXT",
-        "coach": "TEXT",
-        "status": "TEXT NOT NULL DEFAULT 'active'",
-        "created_at": "TIMESTAMP",
-        "updated_at": "TIMESTAMP"
-    }
-
-    for column_name, column_type in new_columns.items():
-
-        if column_name not in existing_columns:
-            connection.execute(
-                f"""
-                ALTER TABLE trainings
-                ADD COLUMN {column_name} {column_type}
-                """
-            )
-
-    connection.execute("""
-        UPDATE trainings
-        SET status = 'active'
-        WHERE status IS NULL
-    """)
-
-    connection.execute("""
-        UPDATE trainings
-        SET created_at = CURRENT_TIMESTAMP
-        WHERE created_at IS NULL
-    """)
-
-    connection.execute("""
-        UPDATE trainings
-        SET updated_at = CURRENT_TIMESTAMP
-        WHERE updated_at IS NULL
-    """)
+    return dict(row)
 
 
 # ============================================================
 # USERS
 # ============================================================
 
-def create_or_update_user(user_id, name=None, phone=None):
-    connection = get_connection()
+def create_or_update_user(
+    vk_id,
+    first_name=None,
+    last_name=None,
+):
+    conn = get_connection()
 
-    connection.execute("""
-        INSERT INTO users
-        (
-            user_id,
-            name,
-            phone
+    now = now_text()
+
+    existing = conn.execute(
+        """
+        SELECT id
+        FROM users
+        WHERE vk_id = ?
+        """,
+        (vk_id,),
+    ).fetchone()
+
+    if existing:
+        conn.execute(
+            """
+            UPDATE users
+            SET
+                first_name = COALESCE(?, first_name),
+                last_name = COALESCE(?, last_name),
+                updated_at = ?
+            WHERE vk_id = ?
+            """,
+            (
+                first_name,
+                last_name,
+                now,
+                vk_id,
+            ),
         )
-        VALUES (?, ?, ?)
+    else:
+        conn.execute(
+            """
+            INSERT INTO users (
+                vk_id,
+                first_name,
+                last_name,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                vk_id,
+                first_name,
+                last_name,
+                now,
+                now,
+            ),
+        )
 
-        ON CONFLICT(user_id)
-        DO UPDATE SET
-            name = COALESCE(excluded.name, users.name),
-            phone = COALESCE(excluded.phone, users.phone),
-            updated_at = CURRENT_TIMESTAMP
-    """, (
-        user_id,
-        name,
-        phone
-    ))
-
-    connection.commit()
-    connection.close()
+    conn.commit()
+    conn.close()
 
 
-def get_user(user_id):
-    connection = get_connection()
+def get_user(vk_id):
+    conn = get_connection()
 
-    row = connection.execute("""
+    row = conn.execute(
+        """
         SELECT *
         FROM users
-        WHERE user_id = ?
-    """, (user_id,)).fetchone()
+        WHERE vk_id = ?
+        """,
+        (vk_id,),
+    ).fetchone()
 
-    connection.close()
+    conn.close()
 
     return row
 
 
-def is_user_blocked(user_id):
-    user = get_user(user_id)
+def is_user_blocked(vk_id):
+    user = get_user(vk_id)
 
     if not user:
         return False
 
-    return bool(user["is_blocked"])
+    return bool(
+        user["is_blocked"]
+    )
 
 
-def set_user_blocked(user_id, blocked=True):
-    connection = get_connection()
+def set_user_blocked(
+    vk_id,
+    blocked=True,
+):
+    conn = get_connection()
 
-    connection.execute("""
+    conn.execute(
+        """
         UPDATE users
         SET
             is_blocked = ?,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE user_id = ?
-    """, (
-        1 if blocked else 0,
-        user_id
-    ))
+            updated_at = ?
+        WHERE vk_id = ?
+        """,
+        (
+            1 if blocked else 0,
+            now_text(),
+            vk_id,
+        ),
+    )
 
-    connection.commit()
-    connection.close()
+    conn.commit()
+    conn.close()
+
+
+# ============================================================
+# TRAINING TEMPLATES
+# ============================================================
+
+def create_training_template(
+    weekday,
+    start_time,
+    end_time,
+    title,
+    category,
+    age_group,
+    level,
+    format,
+    coach,
+    capacity,
+    price,
+    location,
+):
+    conn = get_connection()
+
+    now = now_text()
+
+    cursor = conn.execute(
+        """
+        INSERT INTO training_templates (
+            weekday,
+            start_time,
+            end_time,
+            title,
+            category,
+            age_group,
+            level,
+            format,
+            coach,
+            capacity,
+            price,
+            location,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            weekday,
+            start_time,
+            end_time,
+            title,
+            category,
+            age_group,
+            level,
+            format,
+            coach,
+            capacity,
+            price,
+            location,
+            now,
+            now,
+        ),
+    )
+
+    template_id = cursor.lastrowid
+
+    conn.commit()
+    conn.close()
+
+    return template_id
+
+
+def get_training_templates(
+    active_only=True,
+):
+    conn = get_connection()
+
+    if active_only:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM training_templates
+            WHERE is_active = 1
+            ORDER BY weekday, start_time
+            """
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM training_templates
+            ORDER BY weekday, start_time
+            """
+        ).fetchall()
+
+    conn.close()
+
+    return rows
+
+
+def get_training_template(
+    template_id,
+):
+    conn = get_connection()
+
+    row = conn.execute(
+        """
+        SELECT *
+        FROM training_templates
+        WHERE id = ?
+        """,
+        (template_id,),
+    ).fetchone()
+
+    conn.close()
+
+    return row
+
+
+def update_training_template(
+    template_id,
+    **fields,
+):
+    allowed = {
+        "weekday",
+        "start_time",
+        "end_time",
+        "title",
+        "category",
+        "age_group",
+        "level",
+        "format",
+        "coach",
+        "capacity",
+        "price",
+        "location",
+        "is_active",
+    }
+
+    updates = []
+
+    values = []
+
+    for key, value in fields.items():
+        if key in allowed:
+            updates.append(
+                f"{key} = ?"
+            )
+            values.append(value)
+
+    if not updates:
+        return
+
+    updates.append(
+        "updated_at = ?"
+    )
+    values.append(now_text())
+
+    values.append(template_id)
+
+    conn = get_connection()
+
+    conn.execute(
+        f"""
+        UPDATE training_templates
+        SET {", ".join(updates)}
+        WHERE id = ?
+        """,
+        values,
+    )
+
+    conn.commit()
+    conn.close()
 
 
 # ============================================================
 # TRAININGS
 # ============================================================
 
-def get_trainings():
-    connection = get_connection()
-
-    rows = connection.execute("""
-        SELECT *
+def _next_training_number(conn):
+    row = conn.execute(
+        """
+        SELECT MAX(training_number)
+        AS max_number
         FROM trainings
-        WHERE status = 'active'
-        ORDER BY day_of_week, time
-    """).fetchall()
+        """
+    ).fetchone()
 
-    connection.close()
+    max_number = row["max_number"]
 
-    return rows
+    if max_number is None:
+        return 1
+
+    return max_number + 1
 
 
-def get_training(training_id):
-    connection = get_connection()
+def create_training(
+    training_date,
+    weekday,
+    start_time,
+    end_time,
+    title,
+    category,
+    age_group,
+    level,
+    format,
+    coach,
+    capacity,
+    price,
+    location,
+    template_id=None,
+):
+    conn = get_connection()
 
-    row = connection.execute("""
+    now = now_text()
+
+    training_number = _next_training_number(
+        conn
+    )
+
+    cursor = conn.execute(
+        """
+        INSERT INTO trainings (
+            training_number,
+            training_date,
+            weekday,
+            start_time,
+            end_time,
+            title,
+            category,
+            age_group,
+            level,
+            format,
+            coach,
+            capacity,
+            price,
+            location,
+            status,
+            template_id,
+            created_at,
+            updated_at
+        )
+        VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?
+        )
+        """,
+        (
+            training_number,
+            training_date,
+            weekday,
+            start_time,
+            end_time,
+            title,
+            category,
+            age_group,
+            level,
+            format,
+            coach,
+            capacity,
+            price,
+            location,
+            "scheduled",
+            template_id,
+            now,
+            now,
+        ),
+    )
+
+    training_id = cursor.lastrowid
+
+    conn.commit()
+    conn.close()
+
+    return training_id
+
+
+def get_training(
+    training_id,
+):
+    conn = get_connection()
+
+    row = conn.execute(
+        """
         SELECT *
         FROM trainings
         WHERE id = ?
-    """, (training_id,)).fetchone()
+        """,
+        (training_id,),
+    ).fetchone()
 
-    connection.close()
+    conn.close()
 
     return row
 
 
-def get_trainings_by_day(day_of_week):
-    connection = get_connection()
+def get_training_by_number(
+    training_number,
+):
+    conn = get_connection()
 
-    rows = connection.execute("""
+    row = conn.execute(
+        """
         SELECT *
         FROM trainings
-        WHERE day_of_week = ?
-        AND status = 'active'
-        ORDER BY time
-    """, (day_of_week,)).fetchall()
+        WHERE training_number = ?
+        """,
+        (training_number,),
+    ).fetchone()
 
-    connection.close()
+    conn.close()
+
+    return row
+
+
+def get_trainings(
+    include_cancelled=False,
+):
+    conn = get_connection()
+
+    if include_cancelled:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM trainings
+            ORDER BY training_date, start_time, id
+            """
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM trainings
+            WHERE status != 'cancelled'
+            ORDER BY training_date, start_time, id
+            """
+        ).fetchall()
+
+    conn.close()
 
     return rows
 
 
-def get_trainings_by_category(category):
-    connection = get_connection()
+def get_upcoming_trainings(
+    from_date=None,
+    to_date=None,
+    category=None,
+):
+    conn = get_connection()
 
-    rows = connection.execute("""
+    query = """
+        SELECT *
+        FROM trainings
+        WHERE status = 'scheduled'
+    """
+
+    params = []
+
+    if from_date:
+        query += """
+            AND training_date >= ?
+        """
+        params.append(from_date)
+
+    if to_date:
+        query += """
+            AND training_date <= ?
+        """
+        params.append(to_date)
+
+    if category:
+        query += """
+            AND category = ?
+        """
+        params.append(category)
+
+    query += """
+        ORDER BY training_date, start_time, id
+    """
+
+    rows = conn.execute(
+        query,
+        params,
+    ).fetchall()
+
+    conn.close()
+
+    return rows
+
+
+def get_trainings_by_date(
+    training_date,
+    category=None,
+):
+    conn = get_connection()
+
+    if category:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM trainings
+            WHERE training_date = ?
+              AND category = ?
+              AND status != 'cancelled'
+            ORDER BY start_time, id
+            """,
+            (
+                training_date,
+                category,
+            ),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM trainings
+            WHERE training_date = ?
+              AND status != 'cancelled'
+            ORDER BY start_time, id
+            """,
+            (training_date,),
+        ).fetchall()
+
+    conn.close()
+
+    return rows
+
+
+def get_trainings_by_category(
+    category,
+    from_date=None,
+    to_date=None,
+):
+    conn = get_connection()
+
+    query = """
         SELECT *
         FROM trainings
         WHERE category = ?
-        AND status = 'active'
-        ORDER BY day_of_week, time
-    """, (category,)).fetchall()
+          AND status != 'cancelled'
+    """
 
-    connection.close()
+    params = [category]
+
+    if from_date:
+        query += """
+            AND training_date >= ?
+        """
+        params.append(from_date)
+
+    if to_date:
+        query += """
+            AND training_date <= ?
+        """
+        params.append(to_date)
+
+    query += """
+        ORDER BY training_date, start_time, id
+    """
+
+    rows = conn.execute(
+        query,
+        params,
+    ).fetchall()
+
+    conn.close()
 
     return rows
 
 
+def update_training(
+    training_id,
+    **fields,
+):
+    allowed = {
+        "training_date",
+        "weekday",
+        "start_time",
+        "end_time",
+        "title",
+        "category",
+        "age_group",
+        "level",
+        "format",
+        "coach",
+        "capacity",
+        "price",
+        "location",
+        "status",
+    }
+
+    updates = []
+    values = []
+
+    for key, value in fields.items():
+        if key in allowed:
+            updates.append(
+                f"{key} = ?"
+            )
+            values.append(value)
+
+    if not updates:
+        return
+
+    updates.append(
+        "updated_at = ?"
+    )
+    values.append(now_text())
+
+    values.append(training_id)
+
+    conn = get_connection()
+
+    conn.execute(
+        f"""
+        UPDATE trainings
+        SET {", ".join(updates)}
+        WHERE id = ?
+        """,
+        values,
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def cancel_training(
+    training_id,
+):
+    update_training(
+        training_id,
+        status="cancelled",
+    )
+
+
+def complete_training(
+    training_id,
+):
+    update_training(
+        training_id,
+        status="completed",
+    )
+
+
 # ============================================================
-# REGISTRATIONS
+# РЕГИСТРАЦИИ
 # ============================================================
 
-def get_registration_count(training_id):
-    connection = get_connection()
+def get_registration(
+    training_id,
+    user_vk_id,
+):
+    conn = get_connection()
 
-    row = connection.execute("""
+    row = conn.execute(
+        """
+        SELECT
+            registrations.*,
+            users.vk_id,
+            users.first_name,
+            users.last_name
+        FROM registrations
+        JOIN users
+            ON users.id = registrations.user_id
+        WHERE registrations.training_id = ?
+          AND users.vk_id = ?
+          AND registrations.status = 'registered'
+        """,
+        (
+            training_id,
+            user_vk_id,
+        ),
+    ).fetchone()
+
+    conn.close()
+
+    return row
+
+
+def get_registration_by_id(
+    registration_id,
+):
+    conn = get_connection()
+
+    row = conn.execute(
+        """
+        SELECT
+            registrations.*,
+            users.vk_id,
+            users.first_name,
+            users.last_name
+        FROM registrations
+        JOIN users
+            ON users.id = registrations.user_id
+        WHERE registrations.id = ?
+        """,
+        (registration_id,),
+    ).fetchone()
+
+    conn.close()
+
+    return row
+
+
+def get_registration_count(
+    training_id,
+):
+    conn = get_connection()
+
+    row = conn.execute(
+        """
         SELECT COUNT(*) AS count
         FROM registrations
         WHERE training_id = ?
-        AND status = 'active'
-    """, (training_id,)).fetchone()
+          AND status = 'registered'
+        """,
+        (training_id,),
+    ).fetchone()
 
-    connection.close()
+    conn.close()
 
     return row["count"]
 
 
-def get_registrations(training_id):
-    connection = get_connection()
+def get_registrations(
+    training_id,
+):
+    conn = get_connection()
 
-    rows = connection.execute("""
-        SELECT *
+    rows = conn.execute(
+        """
+        SELECT
+            registrations.*,
+            users.vk_id,
+            users.first_name,
+            users.last_name
         FROM registrations
-        WHERE training_id = ?
-        AND status = 'active'
-        ORDER BY created_at
-    """, (training_id,)).fetchall()
+        JOIN users
+            ON users.id = registrations.user_id
+        WHERE registrations.training_id = ?
+          AND registrations.status = 'registered'
+        ORDER BY registrations.registered_at
+        """,
+        (training_id,),
+    ).fetchall()
 
-    connection.close()
+    conn.close()
 
     return rows
-
-
-def get_registration(training_id, user_id):
-    connection = get_connection()
-
-    row = connection.execute("""
-        SELECT *
-        FROM registrations
-        WHERE training_id = ?
-        AND user_id = ?
-    """, (
-        training_id,
-        user_id
-    )).fetchone()
-
-    connection.close()
-
-    return row
 
 
 def add_registration(
     training_id,
-    user_id,
-    name=None,
-    phone=None
+    user_vk_id,
 ):
-    connection = get_connection()
+    conn = get_connection()
 
-    try:
-        # Проверяем существующую запись
-        existing = connection.execute("""
-            SELECT *
-            FROM registrations
-            WHERE training_id = ?
-            AND user_id = ?
-        """, (
+    now = now_text()
+
+    user = conn.execute(
+        """
+        SELECT id
+        FROM users
+        WHERE vk_id = ?
+        """,
+        (user_vk_id,),
+    ).fetchone()
+
+    if not user:
+        conn.close()
+        raise ValueError(
+            "Пользователь не найден"
+        )
+
+    training = conn.execute(
+        """
+        SELECT *
+        FROM trainings
+        WHERE id = ?
+        """,
+        (training_id,),
+    ).fetchone()
+
+    if not training:
+        conn.close()
+        raise ValueError(
+            "Тренировка не найдена"
+        )
+
+    existing = conn.execute(
+        """
+        SELECT *
+        FROM registrations
+        WHERE training_id = ?
+          AND user_id = ?
+        """,
+        (
             training_id,
-            user_id
-        )).fetchone()
+            user["id"],
+        ),
+    ).fetchone()
 
-        if existing:
+    if existing:
+        if existing["status"] == "registered":
+            conn.close()
+            raise ValueError(
+                "Пользователь уже записан"
+            )
 
-            if existing["status"] == "active":
-                connection.close()
-                return False
+        conn.execute(
+            """
+            UPDATE registrations
+            SET
+                status = 'registered',
+                registered_at = ?,
+                cancelled_at = NULL,
+                cancellation_reason = NULL
+            WHERE id = ?
+            """,
+            (
+                now,
+                existing["id"],
+            ),
+        )
 
-            connection.execute("""
-                UPDATE registrations
-                SET
-                    status = 'active',
-                    name = COALESCE(?, name),
-                    phone = COALESCE(?, phone),
-                    cancelled_at = NULL,
-                    cancellation_reason = NULL
-                WHERE training_id = ?
-                AND user_id = ?
-            """, (
-                name,
-                phone,
-                training_id,
-                user_id
-            ))
+        conn.commit()
+        conn.close()
 
-        else:
+        return existing["id"]
 
-            connection.execute("""
-                INSERT INTO registrations
-                (
-                    training_id,
-                    user_id,
-                    name,
-                    phone
-                )
-                VALUES (?, ?, ?, ?)
-            """, (
-                training_id,
-                user_id,
-                name,
-                phone
-            ))
+    count_row = conn.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM registrations
+        WHERE training_id = ?
+          AND status = 'registered'
+        """,
+        (training_id,),
+    ).fetchone()
 
-        connection.commit()
+    if count_row["count"] >= training["capacity"]:
+        conn.close()
+        raise ValueError(
+            "Тренировка заполнена"
+        )
 
-        result = True
+    cursor = conn.execute(
+        """
+        INSERT INTO registrations (
+            training_id,
+            user_id,
+            status,
+            registered_at
+        )
+        VALUES (?, ?, 'registered', ?)
+        """,
+        (
+            training_id,
+            user["id"],
+            now,
+        ),
+    )
 
-    except sqlite3.IntegrityError:
-        connection.rollback()
-        result = False
+    registration_id = cursor.lastrowid
 
-    finally:
-        connection.close()
+    conn.commit()
+    conn.close()
 
-    return result
+    return registration_id
 
 
 def cancel_registration(
     training_id,
-    user_id,
-    reason=None
+    user_vk_id,
+    reason=None,
 ):
-    connection = get_connection()
+    conn = get_connection()
 
-    cursor = connection.execute("""
+    user = conn.execute(
+        """
+        SELECT id
+        FROM users
+        WHERE vk_id = ?
+        """,
+        (user_vk_id,),
+    ).fetchone()
+
+    if not user:
+        conn.close()
+        return False
+
+    cursor = conn.execute(
+        """
         UPDATE registrations
         SET
             status = 'cancelled',
-            cancelled_at = CURRENT_TIMESTAMP,
+            cancelled_at = ?,
             cancellation_reason = ?
         WHERE training_id = ?
-        AND user_id = ?
-        AND status = 'active'
-    """, (
-        reason,
-        training_id,
-        user_id
-    ))
+          AND user_id = ?
+          AND status = 'registered'
+        """,
+        (
+            now_text(),
+            reason,
+            training_id,
+            user["id"],
+        ),
+    )
 
-    connection.commit()
+    conn.commit()
+    conn.close()
 
-    cancelled = cursor.rowcount > 0
-
-    connection.close()
-
-    return cancelled
+    return cursor.rowcount > 0
 
 
-def delete_registration(training_id, user_id):
-    """
-    Старую функцию сохраняем для совместимости
-    с текущим bot.py.
-
-    Фактически запись переводится в cancelled,
-    а не удаляется из базы.
-    """
-
+def delete_registration(
+    training_id,
+    user_vk_id,
+):
     return cancel_registration(
         training_id,
-        user_id,
-        "Отмена пользователем"
+        user_vk_id,
     )
 
 
-def get_user_registrations(user_id):
-    connection = get_connection()
+def get_user_registrations(
+    user_vk_id,
+    include_cancelled=False,
+):
+    conn = get_connection()
 
-    rows = connection.execute("""
+    query = """
         SELECT
-            registrations.id AS registration_id,
-            registrations.training_id,
-            registrations.user_id,
-            registrations.name,
-            registrations.phone,
-            registrations.created_at,
-            registrations.status,
+            registrations.*,
 
-            trainings.day_of_week,
-            trainings.time,
+            trainings.training_number,
+            trainings.training_date,
+            trainings.weekday,
+            trainings.start_time,
+            trainings.end_time,
             trainings.title,
-            trainings.level,
-            trainings.age_group,
-            trainings.price,
-            trainings.capacity,
             trainings.category,
+            trainings.age_group,
+            trainings.level,
             trainings.format,
-            trainings.coach
+            trainings.coach,
+            trainings.capacity,
+            trainings.price,
+            trainings.location,
+            trainings.status AS training_status
 
         FROM registrations
+
+        JOIN users
+            ON users.id = registrations.user_id
 
         JOIN trainings
-            ON registrations.training_id = trainings.id
+            ON trainings.id = registrations.training_id
 
-        WHERE registrations.user_id = ?
-        AND registrations.status = 'active'
+        WHERE users.vk_id = ?
+    """
 
+    params = [user_vk_id]
+
+    if not include_cancelled:
+        query += """
+            AND registrations.status = 'registered'
+            AND trainings.status != 'cancelled'
+        """
+
+    query += """
         ORDER BY
-            trainings.day_of_week,
-            trainings.time
-    """, (user_id,)).fetchall()
+            trainings.training_date,
+            trainings.start_time
+    """
 
-    connection.close()
+    rows = conn.execute(
+        query,
+        params,
+    ).fetchall()
 
-    return rows
-
-
-# ============================================================
-# ATTENDANCE
-# ============================================================
-
-def create_attendance_for_registration(registration_id):
-    connection = get_connection()
-
-    connection.execute("""
-        INSERT OR IGNORE INTO attendance
-        (
-            registration_id
-        )
-        VALUES (?)
-    """, (registration_id,))
-
-    connection.commit()
-    connection.close()
-
-
-def mark_attendance(
-    registration_id,
-    status,
-    admin_id=None
-):
-    connection = get_connection()
-
-    connection.execute("""
-        INSERT INTO attendance
-        (
-            registration_id,
-            status,
-            marked_at,
-            marked_by
-        )
-        VALUES (?, ?, CURRENT_TIMESTAMP, ?)
-
-        ON CONFLICT(registration_id)
-        DO UPDATE SET
-            status = excluded.status,
-            marked_at = CURRENT_TIMESTAMP,
-            marked_by = excluded.marked_by
-    """, (
-        registration_id,
-        status,
-        admin_id
-    ))
-
-    connection.commit()
-    connection.close()
-
-
-def get_training_attendance(training_id):
-    connection = get_connection()
-
-    rows = connection.execute("""
-        SELECT
-            registrations.id AS registration_id,
-            registrations.user_id,
-            registrations.name,
-            registrations.phone,
-            registrations.status AS registration_status,
-
-            attendance.status AS attendance_status,
-            attendance.marked_at,
-            attendance.marked_by
-
-        FROM registrations
-
-        LEFT JOIN attendance
-            ON attendance.registration_id = registrations.id
-
-        WHERE registrations.training_id = ?
-
-        ORDER BY registrations.created_at
-    """, (training_id,)).fetchall()
-
-    connection.close()
+    conn.close()
 
     return rows
 
@@ -919,90 +1420,320 @@ def get_training_attendance(training_id):
 # WAITLIST
 # ============================================================
 
-def add_to_waitlist(training_id, user_id):
-    connection = get_connection()
+def get_waitlist(
+    training_id,
+):
+    conn = get_connection()
 
-    existing = connection.execute("""
-        SELECT *
+    rows = conn.execute(
+        """
+        SELECT
+            waitlist.*,
+            users.vk_id,
+            users.first_name,
+            users.last_name
         FROM waitlist
-        WHERE training_id = ?
-        AND user_id = ?
-        AND status = 'waiting'
-    """, (
-        training_id,
-        user_id
-    )).fetchone()
+        JOIN users
+            ON users.id = waitlist.user_id
+        WHERE waitlist.training_id = ?
+          AND waitlist.status = 'waiting'
+        ORDER BY waitlist.position
+        """,
+        (training_id,),
+    ).fetchall()
 
-    if existing:
-        connection.close()
-        return False
-
-    position_row = connection.execute("""
-        SELECT COALESCE(MAX(position), 0) + 1 AS position
-        FROM waitlist
-        WHERE training_id = ?
-        AND status = 'waiting'
-    """, (training_id,)).fetchone()
-
-    position = position_row["position"]
-
-    connection.execute("""
-        INSERT INTO waitlist
-        (
-            training_id,
-            user_id,
-            position
-        )
-        VALUES (?, ?, ?)
-    """, (
-        training_id,
-        user_id,
-        position
-    ))
-
-    connection.commit()
-    connection.close()
-
-    return True
-
-
-def get_waitlist(training_id):
-    connection = get_connection()
-
-    rows = connection.execute("""
-        SELECT *
-        FROM waitlist
-        WHERE training_id = ?
-        AND status = 'waiting'
-        ORDER BY position
-    """, (training_id,)).fetchall()
-
-    connection.close()
+    conn.close()
 
     return rows
 
 
-def remove_from_waitlist(training_id, user_id):
-    connection = get_connection()
+def get_waitlist_entry(
+    training_id,
+    user_vk_id,
+):
+    conn = get_connection()
 
-    cursor = connection.execute("""
-        UPDATE waitlist
-        SET status = 'cancelled'
+    row = conn.execute(
+        """
+        SELECT
+            waitlist.*,
+            users.vk_id,
+            users.first_name,
+            users.last_name
+        FROM waitlist
+        JOIN users
+            ON users.id = waitlist.user_id
+        WHERE waitlist.training_id = ?
+          AND users.vk_id = ?
+          AND waitlist.status = 'waiting'
+        """,
+        (
+            training_id,
+            user_vk_id,
+        ),
+    ).fetchone()
+
+    conn.close()
+
+    return row
+
+
+def add_to_waitlist(
+    training_id,
+    user_vk_id,
+):
+    conn = get_connection()
+
+    user = conn.execute(
+        """
+        SELECT id
+        FROM users
+        WHERE vk_id = ?
+        """,
+        (user_vk_id,),
+    ).fetchone()
+
+    if not user:
+        conn.close()
+        raise ValueError(
+            "Пользователь не найден"
+        )
+
+    existing = conn.execute(
+        """
+        SELECT *
+        FROM waitlist
         WHERE training_id = ?
-        AND user_id = ?
-        AND status = 'waiting'
-    """, (
-        training_id,
-        user_id
-    ))
+          AND user_id = ?
+          AND status = 'waiting'
+        """,
+        (
+            training_id,
+            user["id"],
+        ),
+    ).fetchone()
 
-    connection.commit()
+    if existing:
+        conn.close()
+        return existing["id"]
 
-    removed = cursor.rowcount > 0
+    row = conn.execute(
+        """
+        SELECT MAX(position) AS max_position
+        FROM waitlist
+        WHERE training_id = ?
+          AND status = 'waiting'
+        """,
+        (training_id,),
+    ).fetchone()
 
-    connection.close()
+    position = (
+        (row["max_position"] or 0) + 1
+    )
 
-    return removed
+    cursor = conn.execute(
+        """
+        INSERT INTO waitlist (
+            training_id,
+            user_id,
+            position,
+            status,
+            created_at
+        )
+        VALUES (?, ?, ?, 'waiting', ?)
+        """,
+        (
+            training_id,
+            user["id"],
+            position,
+            now_text(),
+        ),
+    )
+
+    waitlist_id = cursor.lastrowid
+
+    conn.commit()
+    conn.close()
+
+    return waitlist_id
+
+
+def remove_from_waitlist(
+    training_id,
+    user_vk_id,
+):
+    conn = get_connection()
+
+    user = conn.execute(
+        """
+        SELECT id
+        FROM users
+        WHERE vk_id = ?
+        """,
+        (user_vk_id,),
+    ).fetchone()
+
+    if not user:
+        conn.close()
+        return False
+
+    cursor = conn.execute(
+        """
+        UPDATE waitlist
+        SET status = 'removed'
+        WHERE training_id = ?
+          AND user_id = ?
+          AND status = 'waiting'
+        """,
+        (
+            training_id,
+            user["id"],
+        ),
+    )
+
+    conn.commit()
+    conn.close()
+
+    return cursor.rowcount > 0
+
+
+# ============================================================
+# ATTENDANCE
+# ============================================================
+
+def create_attendance_for_registration(
+    registration_id,
+):
+    conn = get_connection()
+
+    existing = conn.execute(
+        """
+        SELECT id
+        FROM attendance
+        WHERE registration_id = ?
+        """,
+        (registration_id,),
+    ).fetchone()
+
+    if existing:
+        conn.close()
+        return existing["id"]
+
+    cursor = conn.execute(
+        """
+        INSERT INTO attendance (
+            registration_id,
+            status
+        )
+        VALUES (?, 'unknown')
+        """,
+        (registration_id,),
+    )
+
+    attendance_id = cursor.lastrowid
+
+    conn.commit()
+    conn.close()
+
+    return attendance_id
+
+
+def mark_attendance(
+    registration_id,
+    status,
+    marked_by=None,
+    comment=None,
+):
+    conn = get_connection()
+
+    existing = conn.execute(
+        """
+        SELECT id
+        FROM attendance
+        WHERE registration_id = ?
+        """,
+        (registration_id,),
+    ).fetchone()
+
+    if existing:
+        conn.execute(
+            """
+            UPDATE attendance
+            SET
+                status = ?,
+                marked_by = ?,
+                marked_at = ?,
+                comment = ?
+            WHERE registration_id = ?
+            """,
+            (
+                status,
+                marked_by,
+                now_text(),
+                comment,
+                registration_id,
+            ),
+        )
+    else:
+        conn.execute(
+            """
+            INSERT INTO attendance (
+                registration_id,
+                status,
+                marked_by,
+                marked_at,
+                comment
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                registration_id,
+                status,
+                marked_by,
+                now_text(),
+                comment,
+            ),
+        )
+
+    conn.commit()
+    conn.close()
+
+
+def get_training_attendance(
+    training_id,
+):
+    conn = get_connection()
+
+    rows = conn.execute(
+        """
+        SELECT
+            attendance.*,
+
+            registrations.user_id,
+
+            users.vk_id,
+            users.first_name,
+            users.last_name
+
+        FROM attendance
+
+        JOIN registrations
+            ON registrations.id =
+               attendance.registration_id
+
+        JOIN users
+            ON users.id = registrations.user_id
+
+        WHERE registrations.training_id = ?
+
+        ORDER BY users.first_name, users.last_name
+        """,
+        (training_id,),
+    ).fetchall()
+
+    conn.close()
+
+    return rows
 
 
 # ============================================================
@@ -1010,85 +1741,264 @@ def remove_from_waitlist(training_id, user_id):
 # ============================================================
 
 def create_payment(
-    user_id,
+    user_vk_id,
     amount,
     training_id=None,
-    method=None,
-    external_id=None
+    payment_method=None,
+    external_id=None,
 ):
-    connection = get_connection()
+    conn = get_connection()
 
-    cursor = connection.execute("""
-        INSERT INTO payments
-        (
+    user = conn.execute(
+        """
+        SELECT id
+        FROM users
+        WHERE vk_id = ?
+        """,
+        (user_vk_id,),
+    ).fetchone()
+
+    if not user:
+        conn.close()
+        raise ValueError(
+            "Пользователь не найден"
+        )
+
+    cursor = conn.execute(
+        """
+        INSERT INTO payments (
             user_id,
             training_id,
             amount,
-            method,
-            external_id
+            status,
+            payment_method,
+            external_id,
+            created_at
         )
-        VALUES (?, ?, ?, ?, ?)
-    """, (
-        user_id,
-        training_id,
-        amount,
-        method,
-        external_id
-    ))
+        VALUES (
+            ?, ?, ?, 'pending', ?, ?, ?
+        )
+        """,
+        (
+            user["id"],
+            training_id,
+            amount,
+            payment_method,
+            external_id,
+            now_text(),
+        ),
+    )
 
     payment_id = cursor.lastrowid
 
-    connection.commit()
-    connection.close()
+    conn.commit()
+    conn.close()
 
     return payment_id
 
 
 def update_payment_status(
     payment_id,
-    status
+    status,
 ):
-    connection = get_connection()
+    conn = get_connection()
 
-    if status == "paid":
-        connection.execute("""
-            UPDATE payments
-            SET
-                status = ?,
-                paid_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-        """, (
+    paid_at = (
+        now_text()
+        if status == "paid"
+        else None
+    )
+
+    conn.execute(
+        """
+        UPDATE payments
+        SET
+            status = ?,
+            paid_at = COALESCE(?, paid_at)
+        WHERE id = ?
+        """,
+        (
             status,
-            payment_id
-        ))
+            paid_at,
+            payment_id,
+        ),
+    )
 
-    else:
-        connection.execute("""
-            UPDATE payments
-            SET status = ?
-            WHERE id = ?
-        """, (
-            status,
-            payment_id
-        ))
-
-    connection.commit()
-    connection.close()
+    conn.commit()
+    conn.close()
 
 
-def get_user_payments(user_id):
-    connection = get_connection()
+def get_user_payments(
+    user_vk_id,
+):
+    conn = get_connection()
 
-    rows = connection.execute("""
-        SELECT *
+    rows = conn.execute(
+        """
+        SELECT payments.*
+
         FROM payments
-        WHERE user_id = ?
-        ORDER BY created_at DESC
-    """, (user_id,)).fetchall()
 
-    connection.close()
+        JOIN users
+            ON users.id = payments.user_id
+
+        WHERE users.vk_id = ?
+
+        ORDER BY payments.created_at DESC
+        """,
+        (user_vk_id,),
+    ).fetchall()
+
+    conn.close()
 
     return rows
+
+
+# ============================================================
+# NOTIFICATIONS
+# ============================================================
+
+def create_notification(
+    user_vk_id,
+    training_id,
+    notification_type,
+    scheduled_for,
+):
+    conn = get_connection()
+
+    user = conn.execute(
+        """
+        SELECT id
+        FROM users
+        WHERE vk_id = ?
+        """,
+        (user_vk_id,),
+    ).fetchone()
+
+    if not user:
+        conn.close()
+        raise ValueError(
+            "Пользователь не найден"
+        )
+
+    existing = conn.execute(
+        """
+        SELECT id
+        FROM notifications
+        WHERE user_id = ?
+          AND training_id = ?
+          AND notification_type = ?
+        """,
+        (
+            user["id"],
+            training_id,
+            notification_type,
+        ),
+    ).fetchone()
+
+    if existing:
+        conn.close()
+        return existing["id"]
+
+    cursor = conn.execute(
+        """
+        INSERT INTO notifications (
+            user_id,
+            training_id,
+            notification_type,
+            scheduled_for,
+            status,
+            created_at
+        )
+        VALUES (
+            ?, ?, ?, ?, 'pending', ?
+        )
+        """,
+        (
+            user["id"],
+            training_id,
+            notification_type,
+            scheduled_for,
+            now_text(),
+        ),
+    )
+
+    notification_id = cursor.lastrowid
+
+    conn.commit()
+    conn.close()
+
+    return notification_id
+
+
+def get_pending_notifications(
+    current_time,
+):
+    conn = get_connection()
+
+    rows = conn.execute(
+        """
+        SELECT
+            notifications.*,
+            users.vk_id
+
+        FROM notifications
+
+        JOIN users
+            ON users.id = notifications.user_id
+
+        WHERE notifications.status = 'pending'
+          AND notifications.scheduled_for <= ?
+
+        ORDER BY notifications.scheduled_for
+        """,
+        (current_time,),
+    ).fetchall()
+
+    conn.close()
+
+    return rows
+
+
+def mark_notification_sent(
+    notification_id,
+):
+    conn = get_connection()
+
+    conn.execute(
+        """
+        UPDATE notifications
+        SET
+            status = 'sent',
+            sent_at = ?
+        WHERE id = ?
+        """,
+        (
+            now_text(),
+            notification_id,
+        ),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def mark_notification_failed(
+    notification_id,
+):
+    conn = get_connection()
+
+    conn.execute(
+        """
+        UPDATE notifications
+        SET status = 'failed'
+        WHERE id = ?
+        """,
+        (notification_id,),
+    )
+
+    conn.commit()
+    conn.close()
 
 
 # ============================================================
@@ -1096,46 +2006,91 @@ def get_user_payments(user_id):
 # ============================================================
 
 def add_admin_log(
-    admin_id,
+    admin_vk_id,
     action,
-    entity=None,
+    details=None,
+    entity_type=None,
     entity_id=None,
-    details=None
 ):
-    connection = get_connection()
+    conn = get_connection()
 
-    connection.execute("""
-        INSERT INTO admin_logs
-        (
-            admin_id,
+    conn.execute(
+        """
+        INSERT INTO admin_logs (
+            admin_vk_id,
             action,
-            entity,
+            entity_type,
             entity_id,
-            details
+            details,
+            created_at
         )
-        VALUES (?, ?, ?, ?, ?)
-    """, (
-        admin_id,
-        action,
-        entity,
-        entity_id,
-        details
-    ))
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            admin_vk_id,
+            action,
+            entity_type,
+            entity_id,
+            details,
+            now_text(),
+        ),
+    )
 
-    connection.commit()
-    connection.close()
+    conn.commit()
+    conn.close()
 
 
-def get_admin_logs(limit=100):
-    connection = get_connection()
+def get_admin_logs(
+    limit=100,
+):
+    conn = get_connection()
 
-    rows = connection.execute("""
+    rows = conn.execute(
+        """
         SELECT *
         FROM admin_logs
         ORDER BY created_at DESC
         LIMIT ?
-    """, (limit,)).fetchall()
+        """,
+        (limit,),
+    ).fetchall()
 
-    connection.close()
+    conn.close()
 
     return rows
+
+
+# ============================================================
+# СЛУЖЕБНЫЕ ФУНКЦИИ
+# ============================================================
+
+def get_database_stats():
+    conn = get_connection()
+
+    stats = {}
+
+    tables = [
+        "users",
+        "training_templates",
+        "trainings",
+        "registrations",
+        "waitlist",
+        "attendance",
+        "payments",
+        "notifications",
+        "admin_logs",
+    ]
+
+    for table in tables:
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*) AS count
+            FROM {table}
+            """
+        ).fetchone()
+
+        stats[table] = row["count"]
+
+    conn.close()
+
+    return stats

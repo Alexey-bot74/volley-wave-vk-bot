@@ -45,7 +45,6 @@ def init_db():
     if count == 0:
 
         schedule = [
-
             (1, "09:00-11:00", "Детская тренировка", "", "9-13 лет", 600, 10),
             (1, "17:00-19:00", "Детская тренировка", "", "11-14 лет", 600, 10),
             (1, "19:00-20:30", "Техничка", "любой уровень", "", 1200, 10),
@@ -67,7 +66,6 @@ def init_db():
             (5, "17:00-18:00", "Детская тренировка", "", "5-10 лет", 600, 10),
             (5, "17:00-19:00", "Детская тренировка", "", "11-14 лет", 600, 10),
             (5, "19:00-20:30", "Техничка", "любой уровень", "", 1200, 10)
-
         ]
 
         connection.executemany(
@@ -134,16 +132,10 @@ def get_registrations(training_id):
     return rows
 
 
-def add_registration(
-    training_id,
-    user_id,
-    name=None,
-    phone=None
-):
+def add_registration(training_id, user_id, name=None, phone=None):
     connection = get_connection()
 
     try:
-
         connection.execute("""
             INSERT INTO registrations
             (
@@ -161,13 +153,63 @@ def add_registration(
         ))
 
         connection.commit()
-
         result = True
 
     except sqlite3.IntegrityError:
-
         result = False
 
     connection.close()
 
     return result
+
+
+def get_user_registrations(user_id):
+    connection = get_connection()
+
+    rows = connection.execute("""
+        SELECT
+            registrations.id AS registration_id,
+            registrations.training_id,
+            registrations.user_id,
+            registrations.name,
+            registrations.phone,
+            registrations.created_at,
+            trainings.day_of_week,
+            trainings.time,
+            trainings.title,
+            trainings.level,
+            trainings.age_group,
+            trainings.price
+        FROM registrations
+        JOIN trainings
+            ON registrations.training_id = trainings.id
+        WHERE registrations.user_id = ?
+        ORDER BY
+            trainings.day_of_week,
+            trainings.time
+    """, (user_id,)).fetchall()
+
+    connection.close()
+
+    return rows
+
+
+def delete_registration(training_id, user_id):
+    connection = get_connection()
+
+    cursor = connection.execute("""
+        DELETE FROM registrations
+        WHERE training_id = ?
+        AND user_id = ?
+    """, (
+        training_id,
+        user_id
+    ))
+
+    connection.commit()
+
+    deleted = cursor.rowcount > 0
+
+    connection.close()
+
+    return deleted

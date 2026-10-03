@@ -3385,7 +3385,7 @@ def callback():
 
         except Exception:
             logger.exception(
-                "Ошибка обработки сообщения: "
+                "ОШИБКА ОБРАБОТКИ СООБЩЕНИЯ: "
                 "user_id=%s text=%r",
                 user_id,
                 text,
@@ -3403,8 +3403,8 @@ def callback():
 
             except Exception:
                 logger.exception(
-                    "Не удалось отправить сообщение "
-                    "об ошибке"
+                    "НЕ УДАЛОСЬ ОТПРАВИТЬ "
+                    "СООБЩЕНИЕ ОБ ОШИБКЕ"
                 )
 
         return "ok"
@@ -3425,7 +3425,7 @@ def startup():
     init_database()
 
     logger.info(
-        "VOLLEY WAVE VK BOT VERSION №2 started"
+        "VOLLEY WAVE VK BOT VERSION №3 started"
     )
 
 

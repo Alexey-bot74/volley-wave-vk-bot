@@ -21,11 +21,8 @@ from database import (
     add_registration,
     cancel_registration,
     get_user_registrations,
-    get_waitlist,
     get_waitlist_entry,
     add_to_waitlist,
-    remove_from_waitlist,
-    mark_attendance,
     get_training_attendance,
     add_admin_log,
     get_connection,
@@ -153,7 +150,15 @@ def send_message(user_id, message, keyboard=None):
             ensure_ascii=False,
         )
 
-    return vk_api("messages.send", params)
+    result = vk_api("messages.send", params)
+
+    if result is None:
+        logger.error(
+            "MESSAGE SEND FAILED user=%s",
+            user_id,
+        )
+
+    return result
 
 
 # ============================================================
@@ -371,6 +376,31 @@ def row_value(row, key, default=None):
             return default
 
 
+def normalize_category(value):
+    if value is None:
+        return ""
+
+    value = str(value).strip().lower()
+
+    if value in (
+        "дети",
+        "ребенок",
+        "children",
+        "child",
+    ):
+        return "children"
+
+    if value in (
+        "взрослые",
+        "взрослый",
+        "adults",
+        "adult",
+    ):
+        return "adults"
+
+    return value
+
+
 # ============================================================
 # USER
 # ============================================================
@@ -390,10 +420,12 @@ def ensure_user(user_id):
 
         if info and info.get("response"):
             user = info["response"][0]
+
             first_name = user.get(
                 "first_name",
                 "",
             )
+
             last_name = user.get(
                 "last_name",
                 "",
@@ -412,6 +444,7 @@ def ensure_user(user_id):
             "Failed to create/update user %s",
             user_id,
         )
+
         return get_user(user_id)
 
 
@@ -487,7 +520,12 @@ def get_training_participant_count(training_id):
                 (training_id,),
             )
 
-            return cursor.fetchone()[0]
+            result = cursor.fetchone()
+
+            if result:
+                return result[0]
+
+            return 0
 
         finally:
             connection.close()
@@ -519,6 +557,7 @@ def format_training(
     )
 
     number = training_number(training)
+
     training_date = training_date_value(
         training
     )
@@ -691,10 +730,109 @@ def show_locations(user_id):
 
 
 # ============================================================
+# SCHEDULE — DIRECT DATABASE QUERY
+# ============================================================
+
+def get_schedule_direct(
+    from_date,
+    to_date,
+    category=None,
+):
+    """
+    Надёжная выборка расписания напрямую из SQLite.
+
+    Не зависит от реализации
+    get_upcoming_trainings() в database.py.
+    """
+
+    connection = get_connection()
+
+    try:
+        cursor = connection.cursor()
+
+        query = """
+            SELECT *
+            FROM trainings
+            WHERE training_date >= ?
+              AND training_date <= ?
+              AND status = 'active'
+        """
+
+        params = [
+            from_date,
+            to_date,
+        ]
+
+        if category == "children":
+            query += """
+                AND (
+                    LOWER(category) = 'дети'
+                    OR LOWER(category) = 'children'
+                )
+            """
+
+        elif category == "adults":
+            query += """
+                AND (
+                    LOWER(category) = 'взрослые'
+                    OR LOWER(category) = 'adults'
+                )
+            """
+
+        query += """
+            ORDER BY
+                training_date ASC,
+                start_time ASC,
+                training_number ASC
+        """
+
+        logger.info(
+            "DIRECT SCHEDULE QUERY "
+            "from=%s to=%s category=%s",
+            from_date,
+            to_date,
+            category,
+        )
+
+        cursor.execute(
+            query,
+            params,
+        )
+
+        rows = cursor.fetchall()
+
+        logger.info(
+            "DIRECT SCHEDULE RESULT "
+            "category=%s count=%s",
+            category,
+            len(rows),
+        )
+
+        return list(rows)
+
+    except Exception:
+        logger.exception(
+            "DIRECT SCHEDULE QUERY FAILED "
+            "category=%s",
+            category,
+        )
+
+        return []
+
+    finally:
+        connection.close()
+
+
+# ============================================================
 # SCHEDULE
 # ============================================================
 
 def show_schedule_categories(user_id):
+    logger.info(
+        "SHOW SCHEDULE CATEGORIES user=%s",
+        user_id,
+    )
+
     set_state(
         user_id,
         "schedule_category",
@@ -728,7 +866,6 @@ def show_schedule_categories(user_id):
                         "⬅️ Назад",
                         "secondary",
                     ),
-                ],
             ],
         },
     )
@@ -738,50 +875,51 @@ def show_schedule(
     user_id,
     category=None,
 ):
-    today = today_local()
-    end_date = today + timedelta(
-        days=7
+    logger.info(
+        "SHOW SCHEDULE user=%s category=%s",
+        user_id,
+        category,
     )
 
-    try:
-        if category == "children":
-            trainings = get_upcoming_trainings(
-                from_date=today.isoformat(),
-                to_date=end_date.isoformat(),
-                category="Дети",
-            )
+    today = today_local()
 
-        elif category == "adults":
-            trainings = get_upcoming_trainings(
-                from_date=today.isoformat(),
-                to_date=end_date.isoformat(),
-                category="Взрослые",
-            )
+    end_date = today + timedelta(
+        days=14
+    )
 
-        else:
-            trainings = get_upcoming_trainings(
-                from_date=today.isoformat(),
-                to_date=end_date.isoformat(),
-            )
-
-    except Exception:
-        logger.exception(
-            "Failed to load schedule"
-        )
-        trainings = []
-
-    trainings = list(
-        trainings or []
+    trainings = get_schedule_direct(
+        today.isoformat(),
+        end_date.isoformat(),
+        category,
     )
 
     if not trainings:
+        logger.warning(
+            "NO SCHEDULE FOUND "
+            "user=%s category=%s "
+            "from=%s to=%s",
+            user_id,
+            category,
+            today,
+            end_date,
+        )
+
         send_message(
             user_id,
-            "📅 На ближайшие 7 дней "
-            "тренировок нет.",
+            "📅 На ближайшие 14 дней "
+            "подходящих тренировок нет.",
             back_keyboard(user_id),
         )
+
         return
+
+    logger.info(
+        "SCHEDULE FOUND user=%s "
+        "category=%s count=%s",
+        user_id,
+        category,
+        len(trainings),
+    )
 
     buttons = []
 
@@ -895,6 +1033,11 @@ def show_booking_dates(
                 current.isoformat()
             )
         except Exception:
+            logger.exception(
+                "Failed to load trainings "
+                "for date %s",
+                current,
+            )
             trainings = []
 
         trainings = list(
@@ -905,34 +1048,26 @@ def show_booking_dates(
             trainings = [
                 x
                 for x in trainings
-                if str(
+                if normalize_category(
                     row_value(
                         x,
                         "category",
                         "",
                     )
-                ).lower()
-                in (
-                    "дети",
-                    "children",
-                )
+                ) == "children"
             ]
 
         elif category == "adults":
             trainings = [
                 x
                 for x in trainings
-                if str(
+                if normalize_category(
                     row_value(
                         x,
                         "category",
                         "",
                     )
-                ).lower()
-                in (
-                    "взрослые",
-                    "adults",
-                )
+                ) == "adults"
             ]
 
         if trainings:
@@ -1010,34 +1145,26 @@ def show_booking_trainings(
         trainings = [
             x
             for x in trainings
-            if str(
+            if normalize_category(
                 row_value(
                     x,
                     "category",
                     "",
                 )
-            ).lower()
-            in (
-                "дети",
-                "children",
-            )
+            ) == "children"
         ]
 
     elif category == "adults":
         trainings = [
             x
             for x in trainings
-            if str(
+            if normalize_category(
                 row_value(
                     x,
                     "category",
                     "",
                 )
-            ).lower()
-            in (
-                "взрослые",
-                "adults",
-            )
+            ) == "adults"
         ]
 
     if not trainings:
@@ -1116,6 +1243,11 @@ def show_training_for_booking(
             training_id
         )
     except Exception:
+        logger.exception(
+            "Failed to load registrations "
+            "for training %s",
+            training_id,
+        )
         registrations = []
 
     registrations = list(
@@ -1985,12 +2117,11 @@ def get_table_columns(
 
 def ensure_default_templates():
     """
-    Восстанавливает шаблоны, если база была
-    очищена после перезапуска Render.
+    Создаёт шаблоны, если их ещё нет.
 
-    Функция специально использует PRAGMA,
-    чтобы не зависеть от точной версии
-    database.py.
+    Важный момент:
+    created_at и updated_at добавляются явно,
+    если такие поля существуют и являются NOT NULL.
     """
 
     connection = get_connection()
@@ -2041,13 +2172,31 @@ def ensure_default_templates():
                     )
 
                 elif column in template:
-                    values[column] = template[column]
+                    values[column] = (
+                        template[column]
+                    )
 
                 elif column == "active":
                     values[column] = 1
 
                 elif column == "is_active":
                     values[column] = 1
+
+                elif column == "created_at":
+                    values[column] = (
+                        datetime.now(TIMEZONE)
+                        .strftime(
+                            "%Y-%m-%d %H:%M:%S"
+                        )
+                    )
+
+                elif column == "updated_at":
+                    values[column] = (
+                        datetime.now(TIMEZONE)
+                        .strftime(
+                            "%Y-%m-%d %H:%M:%S"
+                        )
+                    )
 
             if not values:
                 continue
@@ -2098,15 +2247,6 @@ def create_training_directly(
     template,
     training_date,
 ):
-    """
-    Создаёт конкретную тренировку напрямую
-    через SQLite.
-
-    Это позволяет не зависеть от того,
-    что именно возвращает create_training()
-    в database.py.
-    """
-
     connection = get_connection()
 
     try:
@@ -2219,14 +2359,6 @@ def create_training_directly(
 def generate_default_trainings(
     weeks=6,
 ):
-    """
-    Создаёт конкретные тренировки на weeks
-    недель вперёд.
-
-    Важно:
-    повторный запуск не создаёт дубликаты.
-    """
-
     today = today_local()
 
     end_date = (
@@ -2280,15 +2412,6 @@ def generate_default_trainings(
 
 
 def ensure_schedule():
-    """
-    Главная функция восстановления расписания.
-
-    После init_db():
-    1. пытаемся восстановить шаблоны;
-    2. создаём конкретные тренировки;
-    3. повторно ничего не дублируем.
-    """
-
     logger.info(
         "Checking training schedule..."
     )
@@ -2364,6 +2487,13 @@ def admin_show_schedule(user_id):
 
     trainings = list(
         trainings or []
+    )
+
+    logger.info(
+        "ADMIN SCHEDULE RESULT "
+        "user=%s count=%s",
+        user_id,
+        len(trainings),
     )
 
     if not trainings:
@@ -2660,6 +2790,10 @@ def admin_show_attendance(
             training_id
         )
     except Exception:
+        logger.exception(
+            "Failed to load registrations "
+            "for attendance"
+        )
         registrations = []
 
     registrations = list(
@@ -2673,6 +2807,9 @@ def admin_show_attendance(
             )
         )
     except Exception:
+        logger.exception(
+            "Failed to load attendance"
+        )
         attendance = []
 
     attendance = list(
@@ -3108,6 +3245,14 @@ def find_training_from_button(text):
 
         return cursor.fetchone()
 
+    except Exception:
+        logger.exception(
+            "Failed to find training "
+            "from button: %s",
+            text,
+        )
+        return None
+
     finally:
         connection.close()
 
@@ -3141,6 +3286,12 @@ def admin_show_participants_list(
 
     trainings = list(
         trainings or []
+    )
+
+    logger.info(
+        "ADMIN PARTICIPANTS LIST "
+        "trainings=%s",
+        len(trainings),
     )
 
     if not trainings:
@@ -3417,6 +3568,13 @@ def handle_text(
         {},
     )
 
+    logger.info(
+        "STATE user=%s state=%s data=%s",
+        user_id,
+        state,
+        state_data,
+    )
+
     # --------------------------------------------------------
     # ADMIN EXTRA STATE
     # --------------------------------------------------------
@@ -3536,6 +3694,10 @@ def handle_text(
                 )
 
             except Exception as error:
+                logger.exception(
+                    "Waitlist error"
+                )
+
                 send_message(
                     user_id,
                     f"❌ Ошибка: {error}",
@@ -3631,7 +3793,18 @@ def handle_text(
 
     if state == "schedule_category":
 
+        logger.info(
+            "SCHEDULE CATEGORY INPUT "
+            "user=%s text=%r",
+            user_id,
+            text,
+        )
+
         if text == "👧 Дети":
+            logger.info(
+                "SCHEDULE CATEGORY -> CHILDREN"
+            )
+
             show_schedule(
                 user_id,
                 "children",
@@ -3639,6 +3812,10 @@ def handle_text(
             return
 
         if text == "🧑 Взрослые":
+            logger.info(
+                "SCHEDULE CATEGORY -> ADULTS"
+            )
+
             show_schedule(
                 user_id,
                 "adults",
@@ -3646,11 +3823,22 @@ def handle_text(
             return
 
         if text == "🏠 Все тренировки":
+            logger.info(
+                "SCHEDULE CATEGORY -> ALL"
+            )
+
             show_schedule(
                 user_id,
                 None,
             )
             return
+
+        logger.warning(
+            "UNKNOWN SCHEDULE CATEGORY "
+            "user=%s text=%r",
+            user_id,
+            text,
+        )
 
     # --------------------------------------------------------
     # SCHEDULE TRAINING
@@ -4178,6 +4366,7 @@ def callback():
                 logger.warning(
                     "Invalid secret key"
                 )
+
                 return (
                     "invalid secret",
                     403,
@@ -4226,6 +4415,7 @@ def callback():
             logger.warning(
                 "No user_id in event"
             )
+
             return "ok", 200
 
         logger.info(

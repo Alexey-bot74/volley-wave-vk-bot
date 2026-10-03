@@ -221,14 +221,52 @@ def callback():
         )
 
     elif text == "🏐 Записаться":
-
-        send_message(
-            user_id,
-            "🏐 Запись на тренировку\n\n"
-            "Здесь мы скоро сделаем выбор тренировки "
-            "и запись на неё.",
-            main_keyboard()
-        )
+    send_message(
+        user_id,
+        "🏐 Запись на тренировку\n\n"
+        "Выберите день:",
+        """{
+            "one_time": false,
+            "buttons": [
+                [
+                    {
+                        "action": {
+                            "type": "text",
+                            "label": "Понедельник"
+                        }
+                    },
+                    {
+                        "action": {
+                            "type": "text",
+                            "label": "Вторник"
+                        }
+                    }
+                ],
+                [
+                    {
+                        "action": {
+                            "type": "text",
+                            "label": "Среда"
+                        }
+                    },
+                    {
+                        "action": {
+                            "type": "text",
+                            "label": "Четверг"
+                        }
+                    }
+                ],
+                [
+                    {
+                        "action": {
+                            "type": "text",
+                            "label": "Пятница"
+                        }
+                    }
+                ]
+            ]
+        }"""
+    )
 
     elif text == "📅 Расписание":
 

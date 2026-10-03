@@ -1,6 +1,7 @@
 import os
 import requests
 from flask import Flask, request
+
 from database import (
     init_db,
     get_trainings,
@@ -14,6 +15,29 @@ SECRET_KEY = os.getenv("VK_SECRET_KEY")
 VK_TOKEN = os.getenv("VK_TOKEN")
 
 init_db()
+
+# Диагностика базы
+try:
+    all_trainings = get_trainings()
+
+    print("===================================")
+    print("DATABASE CHECK")
+    print("TRAININGS COUNT:", len(all_trainings))
+
+    for training in all_trainings:
+        print(
+            training["id"],
+            training["day_of_week"],
+            training["time"],
+            training["title"],
+            training["price"],
+            training["capacity"]
+        )
+
+    print("===================================")
+
+except Exception as error:
+    print("DATABASE ERROR:", error)
 
 
 DAYS = {
@@ -107,14 +131,15 @@ def main_keyboard():
 def format_schedule():
     trainings = get_trainings()
 
+    print("FORMAT SCHEDULE - TRAININGS:", len(trainings))
+
     if not trainings:
         return "📅 Расписание пока пустое."
 
     lines = [
         "📅 РАСПИСАНИЕ VOLLEY WAVE",
         "",
-        "Базовое расписание на неделю:",
-        ""
+        "Базовое расписание на неделю:"
     ]
 
     current_day = None
@@ -132,7 +157,10 @@ def format_schedule():
         registered = get_registration_count(training["id"])
         capacity = training["capacity"]
 
-        available = max(capacity - registered, 0)
+        available = max(
+            capacity - registered,
+            0
+        )
 
         title = training["title"]
 
@@ -198,7 +226,8 @@ def callback():
             user_id,
             "🏐 Запись на тренировку\n\n"
             "Здесь мы скоро сделаем выбор тренировки "
-            "и запись на неё."
+            "и запись на неё.",
+            main_keyboard()
         )
 
     elif text == "📅 Расписание":
@@ -216,7 +245,7 @@ def callback():
         send_message(
             user_id,
             "👤 Мои тренировки\n\n"
-            "Здесь будут отображаться ваши записи на тренировки.",
+            "Здесь будут отображаться ваши записи.",
             main_keyboard()
         )
 
@@ -225,8 +254,7 @@ def callback():
         send_message(
             user_id,
             "💰 Цены\n\n"
-            "Стоимость тренировок указана непосредственно "
-            "в расписании.",
+            "Стоимость тренировок указана в расписании.",
             main_keyboard()
         )
 

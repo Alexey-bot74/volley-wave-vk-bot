@@ -2374,6 +2374,54 @@ def admin_show_schedule(user_id):
     )
     buttons = compact_keyboard_buttons(buttons, max_rows=10, max_buttons_per_row=2)
 
+    # Подробная информация выводится отдельным текстом над кнопками.
+    # Сами кнопки не меняем.
+    schedule_text = "📅 РАСПИСАНИЕ\n\n"
+
+    current_date = None
+    for training in trainings:
+        training_date = training_date_value(training)
+
+        if training_date != current_date:
+            if current_date is not None:
+                schedule_text += "\n"
+            schedule_text += (
+                f"📌 {format_date(training_date)}\n"
+            )
+            current_date = training_date
+
+        training_format = row_value(
+            training,
+            "format",
+            "",
+        ) or ""
+        if training_format == "Технический":
+            training_format = "Техничка"
+
+        start_time = row_value(
+            training,
+            "start_time",
+            "",
+        )
+        end_time = row_value(
+            training,
+            "end_time",
+            "",
+        )
+
+        count = get_training_participant_count(
+            row_value(training, "id")
+        )
+        capacity = training_capacity(training)
+
+        schedule_text += (
+            f"⏰ {start_time}–{end_time} | "
+            f"{training_format} | "
+            f"👥 {count}/{capacity}\n"
+        )
+
+    schedule_text += "\nВыберите тренировку:"
+
     set_state(
         user_id,
         "admin_schedule_select",
@@ -2382,8 +2430,7 @@ def admin_show_schedule(user_id):
 
     send_message(
         user_id,
-        "📅 РАСПИСАНИЕ\n\n"
-        "Выберите тренировку:",
+        schedule_text,
         {
             "one_time": False,
             "buttons": buttons,
@@ -4233,7 +4280,6 @@ def handle_text(
             # 1. 07.10.2026
             # 2. 17:00–19:00
             # Нумерация удаляется только в начале строки.
-            import re
             lines = [
                 re.sub(r"^\s*\d+\s*[.)]\s*", "", line).strip()
                 for line in lines

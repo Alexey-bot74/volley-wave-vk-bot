@@ -701,9 +701,13 @@ def show_schedule(
         grouped.setdefault(current_date, []).append(training)
 
     text = "📅 РАСПИСАНИЕ НА НЕДЕЛЮ\n\n"
+    buttons = []
+
     for current_date in sorted(grouped):
         text += f"📌 {format_date(current_date)}\n"
         for training in grouped[current_date]:
+            training_id = row_value(training, "id")
+            number = training_number(training)
             start_time = row_value(training, "start_time", "")
             end_time = row_value(training, "end_time", "")
             training_format = row_value(training, "format", "") or ""
@@ -714,9 +718,25 @@ def show_schedule(
                 training_format = "Техничка"
             text += f"\n⏰ {start_time}–{end_time} | {training_format} | {level}\n"
             text += f"🏅 {coach} | 💰 {price}₽\n"
+            buttons.append([
+                button(
+                    f"📝 №{number} {start_time}–{end_time}",
+                    "primary",
+                )
+            ])
         text += "\n"
 
-    send_message(user_id, text.rstrip(), back_keyboard(user_id))
+    buttons.append([
+        button("⬅️ Назад", "secondary"),
+        button("🏠 Главное меню", "secondary"),
+    ])
+
+    set_state(user_id, "schedule_week", {"category": category})
+    send_message(
+        user_id,
+        text.rstrip() + "\n\n📝 Нажмите кнопку тренировки, чтобы сразу перейти к записи.",
+        {"one_time": False, "buttons": buttons},
+    )
 
 
 # ============================================================
@@ -3136,19 +3156,18 @@ def handle_admin_extra_state(
 
     if state == "admin_participants_select":
 
-        training = (
-            find_training_from_button(
-                text
-            )
-        )
+        training = find_training_from_button(text)
 
         if training:
             admin_show_participants(
                 user_id,
-                row_value(
-                    training,
-                    "id",
-                ),
+                row_value(training, "id"),
+            )
+        else:
+            send_message(
+                user_id,
+                "❌ Не удалось найти выбранную тренировку. Откройте список участников ещё раз.",
+                admin_back_keyboard(),
             )
 
         return True
@@ -3193,6 +3212,31 @@ def handle_text(
         "data",
         {},
     )
+
+    # --------------------------------------------------------
+    # ADMIN MENU BUTTONS — ALWAYS AVAILABLE FOR ADMINS
+    # --------------------------------------------------------
+
+    if user_id in ADMINS:
+        if text == "📅 Расписание":
+            admin_show_schedule(user_id)
+            return
+
+        if text == "👥 Участники тренировок":
+            admin_show_participants_list(user_id)
+            return
+
+        if text == "➕ Добавить тренировку":
+            admin_start_add_training(user_id)
+            return
+
+        if text == "👤 Режим пользователя":
+            show_main_menu(user_id)
+            return
+
+        if text == "⚙️ Админ-панель":
+            show_admin_menu(user_id)
+            return
 
     # --------------------------------------------------------
     # ADMIN MODE
@@ -3339,6 +3383,28 @@ def handle_text(
         state_data,
     ):
         return
+
+    # --------------------------------------------------------
+    # WEEK SCHEDULE -> DIRECT BOOKING
+    # --------------------------------------------------------
+
+    if state == "schedule_week":
+        if text.startswith("📝 №"):
+            training = find_training_from_button(text[2:].strip())
+            if training:
+                show_training_for_booking(user_id, training)
+            else:
+                # На случай, если эмодзи входит в поиск кнопки.
+                training = find_training_from_button(text)
+                if training:
+                    show_training_for_booking(user_id, training)
+                else:
+                    send_message(
+                        user_id,
+                        "❌ Тренировка не найдена. Откройте расписание ещё раз.",
+                        back_keyboard(user_id),
+                    )
+            return
 
     # --------------------------------------------------------
     # BOOKING CATEGORY
@@ -3604,16 +3670,15 @@ def handle_text(
 
         if state == "admin_schedule_select":
 
-            training = (
-                find_training_from_button(
-                    text
-                )
-            )
+            training = find_training_from_button(text)
 
             if training:
-                admin_show_training(
+                admin_show_training(user_id, training)
+            else:
+                send_message(
                     user_id,
-                    training,
+                    "❌ Не удалось найти выбранную тренировку. Откройте расписание ещё раз.",
+                    admin_back_keyboard(),
                 )
 
             return
@@ -3681,6 +3746,16 @@ def handle_text(
                 if line.strip()
             ]
 
+            # Разрешаем отправлять строки с нумерацией, например:
+            # 1. 07.10.2026
+            # 2. 17:00–19:00
+            # Нумерация удаляется только в начале строки.
+            import re
+            lines = [
+                re.sub(r"^\s*\d+\s*[.)]\s*", "", line).strip()
+                for line in lines
+            ]
+
             if len(lines) != 7:
                 send_message(
                     user_id,
@@ -3711,10 +3786,20 @@ def handle_text(
             }
 
             try:
-                datetime.strptime(
-                    lines[0],
-                    "%d.%m.%Y",
-                )
+                date_text = lines[0].replace("/", ".").replace("-", ".").strip()
+                parsed_date = None
+                for date_format in ("%d.%m.%Y", "%d.%m.%y", "%d.%m"):
+                    try:
+                        parsed_date = datetime.strptime(date_text, date_format).date()
+                        if date_format == "%d.%m":
+                            parsed_date = parsed_date.replace(year=today_local().year)
+                        break
+                    except ValueError:
+                        continue
+                if parsed_date is None:
+                    raise ValueError("Дата: ДД.ММ.ГГГГ (например, 07.10.2026)")
+
+                lines[0] = parsed_date.strftime("%d.%m.%Y")
 
                 time_line = (
                     lines[1]

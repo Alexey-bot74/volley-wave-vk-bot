@@ -140,6 +140,47 @@ def vk_api(method, params):
         return None
 
 
+def compact_keyboard_buttons(buttons, max_rows=10, max_buttons_per_row=2):
+    """Compact a list of single-button rows into VK-safe rows."""
+    flat = []
+    for row in buttons or []:
+        for item in row or []:
+            if item:
+                flat.append(item)
+
+    if max_buttons_per_row < 1:
+        max_buttons_per_row = 1
+
+    rows = [
+        flat[i:i + max_buttons_per_row]
+        for i in range(0, len(flat), max_buttons_per_row)
+    ]
+
+    if len(rows) <= max_rows:
+        return rows
+
+    # Keep navigation buttons at the bottom.
+    nav = []
+    content = []
+    for item in flat:
+        label = str(item.get("action", {}).get("label", ""))
+        if label.startswith("⬅️") or label.startswith("🏠"):
+            nav.append(item)
+        else:
+            content.append(item)
+
+    content_rows = [
+        content[i:i + max_buttons_per_row]
+        for i in range(0, len(content), max_buttons_per_row)
+    ]
+    reserve = 1 if nav else 0
+    allowed_content_rows = max(1, max_rows - reserve)
+    content_rows = content_rows[:allowed_content_rows]
+    if nav:
+        content_rows.append(nav[:max_buttons_per_row])
+    return content_rows
+
+
 def send_message(user_id, message, keyboard=None):
     params = {
         "user_id": user_id,
@@ -2998,21 +3039,35 @@ def parse_short_date_button(text):
 
 
 def find_training_from_button(text):
-    """Find training by number from any schedule button label."""
+    """Find training by the number shown in a schedule button."""
     import re
+
     text = str(text or "").strip()
     match = re.search(r"№\s*(\d+)", text)
     if not match:
+        logger.warning("TRAINING BUTTON NUMBER NOT FOUND: %r", text)
         return None
-    number = int(match.group(1))
+
+    number_text = match.group(1)
     connection = get_connection()
     try:
         cursor = connection.cursor()
         cursor.execute(
-            "SELECT * FROM trainings WHERE CAST(training_number AS INTEGER) = ? LIMIT 1",
-            (number,),
+            "SELECT * FROM trainings "
+            "WHERE CAST(training_number AS INTEGER) = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (int(number_text),),
         )
-        return cursor.fetchone()
+        training = cursor.fetchone()
+        logger.info(
+            "TRAINING BUTTON LOOKUP number=%s found=%s",
+            number_text,
+            bool(training),
+        )
+        return training
+    except Exception:
+        logger.exception("TRAINING BUTTON LOOKUP ERROR text=%r", text)
+        return None
     finally:
         connection.close()
 
@@ -3384,21 +3439,18 @@ def handle_text(
     # --------------------------------------------------------
 
     if state == "schedule_week":
-        if text.startswith("📝 №"):
-            training = find_training_from_button(text[2:].strip())
+        # Кнопки расписания имеют вид: "№12 17:00 | Миксты | Средний".
+        # Разрешаем также старый вариант с эмодзи, чтобы старые клавиатуры не ломали поток.
+        if "№" in text:
+            training = find_training_from_button(text)
             if training:
                 show_training_for_booking(user_id, training)
             else:
-                # На случай, если эмодзи входит в поиск кнопки.
-                training = find_training_from_button(text)
-                if training:
-                    show_training_for_booking(user_id, training)
-                else:
-                    send_message(
-                        user_id,
-                        "❌ Тренировка не найдена. Откройте расписание ещё раз.",
-                        back_keyboard(user_id),
-                    )
+                send_message(
+                    user_id,
+                    "❌ Тренировка не найдена. Откройте расписание ещё раз.",
+                    back_keyboard(user_id),
+                )
             return
 
     # --------------------------------------------------------

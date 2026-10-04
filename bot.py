@@ -735,9 +735,15 @@ def show_schedule(user_id, category=None):
             buttons.append(row)
         text += "\n"
 
-    buttons.append([button("⬅️ Назад", "secondary"), button("🏠 Главное меню", "secondary")])
-    if len(buttons) > 10:
-        buttons = buttons[:8] + buttons[-1:]
+    buttons.append([
+        button("⬅️ Назад", "secondary"),
+        button("🏠 Главное меню", "secondary"),
+    ])
+    buttons = compact_keyboard_buttons(
+        buttons,
+        max_rows=10,
+        max_buttons_per_row=2,
+    )
 
     set_state(user_id, "schedule_week", {"category": category})
     send_message(user_id, text.rstrip() + "\n\n📝 Нажмите кнопку тренировки, чтобы сразу увидеть участников и записаться.", {"one_time": False, "buttons": buttons})
@@ -2343,10 +2349,24 @@ def admin_show_schedule(user_id):
     buttons = []
 
     for training in trainings:
+        training_format = row_value(
+            training,
+            "format",
+            "",
+        ) or ""
+        if training_format == "Технический":
+            training_format = "Техничка"
+
+        level = row_value(
+            training,
+            "level",
+            "",
+        ) or ""
+
         label = (
             f"№{training_number(training)} "
-            f"{format_short_date(training_date_value(training))} "
-            f"{row_value(training, 'start_time', '')}"
+            f"{row_value(training, 'start_time', '')} | "
+            f"{training_format} | {level}"
         )
 
         buttons.append(
@@ -3272,30 +3292,12 @@ def handle_text(
     )
 
     # --------------------------------------------------------
-    # ADMIN MENU BUTTONS — ALWAYS AVAILABLE FOR ADMINS
-    # --------------------------------------------------------
-
-    if user_id in ADMINS:
-        if text == "📅 Расписание":
-            admin_show_schedule(user_id)
-            return
-
-
-        if text == "➕ Добавить тренировку":
-            admin_start_add_training(user_id)
-            return
-
-        if text == "👤 Режим пользователя":
-            show_main_menu(user_id)
-            return
-
-        if text == "⚙️ Админ-панель":
-            show_admin_menu(user_id)
-            return
-
-    # --------------------------------------------------------
     # ADMIN MODE
     # --------------------------------------------------------
+    # Администратор должен иметь возможность пользоваться
+    # обычным пользовательским меню. Поэтому админские кнопки
+    # обрабатываем только когда пользователь уже находится
+    # в admin_menu/admin_* состоянии.
 
     admin_mode = (
         user_id in ADMINS
@@ -3313,7 +3315,6 @@ def handle_text(
                 user_id
             )
             return
-
 
         if text == "➕ Добавить тренировку":
             admin_start_add_training(
@@ -3439,8 +3440,8 @@ def handle_text(
     # --------------------------------------------------------
 
     if state == "schedule_week":
-        # Кнопки расписания имеют вид: "№12 17:00 | Миксты | Средний".
-        # Разрешаем также старый вариант с эмодзи, чтобы старые клавиатуры не ломали поток.
+        # Кнопки расписания:
+        # №12 17:00 | Миксты | Средний
         if "№" in text:
             training = find_training_from_button(text)
             if training:
@@ -3807,12 +3808,18 @@ def handle_text(
             format_aliases = {
                 "техничка": "Техничка",
                 "технический": "Техничка",
+                "техническая": "Техничка",
+                "техническая тренировка": "Техничка",
                 "женская": "Женская",
                 "женская тренировка": "Женская",
+                "женская группа": "Женская",
                 "миксты": "Миксты",
                 "микст": "Миксты",
+                "mixed": "Миксты",
+                "mix": "Миксты",
                 "мужская": "Мужская",
                 "мужская тренировка": "Мужская",
+                "мужская группа": "Мужская",
                 "тренировка": "Тренировка",
             }
 
@@ -3831,6 +3838,7 @@ def handle_text(
                     .replace("-", ".")
                     .strip()
                 )
+                date_text = re.sub(r"\s*\.\s*", ".", date_text)
 
                 # Дата может прийти как "1.07.10" — это номер строки 1 + дата 07.10.
                 # Также поддерживаем обычные "07.10" и "07.10.2026".

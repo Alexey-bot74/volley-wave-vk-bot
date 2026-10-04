@@ -652,6 +652,12 @@ def show_schedule_categories(user_id):
                 ],
                 [
                     button(
+                        "📅 Вся неделя",
+                        "positive",
+                    ),
+                ],
+                [
+                    button(
                         "⬅️ Назад",
                         "secondary",
                     ),
@@ -686,9 +692,15 @@ def show_schedule(
                 from_date=today.isoformat(),
                 to_date=end_date.isoformat(),
             )
-    except Exception:
+    except Exception as error:
         logger.exception("Failed to load schedule")
-        trainings = []
+        send_message(
+            user_id,
+            "❌ Не удалось загрузить расписание.\n\n"
+            "Ошибка записана в лог Render.",
+            back_keyboard(user_id),
+        )
+        return
 
     trainings = list(trainings or [])
     if not trainings:
@@ -2306,10 +2318,22 @@ def admin_show_schedule(user_id):
         + timedelta(days=6)
     )
 
-    trainings = admin_db_trainings(
-        today.isoformat(),
-        end_date.isoformat(),
-    )
+    try:
+        trainings = admin_db_trainings(
+            today.isoformat(),
+            end_date.isoformat(),
+        )
+    except Exception as error:
+        logger.exception(
+            "ADMIN TRAININGS LOAD ERROR"
+        )
+        send_message(
+            user_id,
+            "❌ Не удалось загрузить данные тренировок.\n\n"
+            "Ошибка записана в лог Render.",
+            admin_back_keyboard(),
+        )
+        return
 
     trainings = list(
         trainings or []
@@ -2740,10 +2764,25 @@ def admin_save_training(
     data,
 ):
     try:
-        training_date = datetime.strptime(
-            data["date"],
-            "%d.%m.%Y",
-        ).date()
+        raw_date = str(data["date"]).strip()
+        training_date = None
+        for date_format in ("%d.%m.%Y", "%d.%m.%y", "%d.%m"):
+            try:
+                training_date = datetime.strptime(
+                    raw_date,
+                    date_format,
+                ).date()
+                if date_format == "%d.%m":
+                    training_date = training_date.replace(
+                        year=today_local().year
+                    )
+                break
+            except ValueError:
+                continue
+        if training_date is None:
+            raise ValueError(
+                "Дата должна быть в формате ДД.ММ.ГГГГ или ДД.ММ"
+            )
 
         start_time = data["start_time"]
         end_time = data["end_time"]
@@ -3068,10 +3107,22 @@ def admin_show_participants_list(
         + timedelta(days=6)
     )
 
-    trainings = admin_db_trainings(
-        today.isoformat(),
-        end_date.isoformat(),
-    )
+    try:
+        trainings = admin_db_trainings(
+            today.isoformat(),
+            end_date.isoformat(),
+        )
+    except Exception as error:
+        logger.exception(
+            "ADMIN TRAININGS LOAD ERROR"
+        )
+        send_message(
+            user_id,
+            "❌ Не удалось загрузить данные тренировок.\n\n"
+            "Ошибка записана в лог Render.",
+            admin_back_keyboard(),
+        )
+        return
 
     trainings = list(
         trainings or []
@@ -3153,6 +3204,24 @@ def handle_admin_extra_state(
 ):
     if user_id not in ADMINS:
         return False
+
+    if state == "admin_schedule_select":
+
+        training = find_training_from_button(text)
+
+        if training:
+            admin_show_training(
+                user_id,
+                training,
+            )
+        else:
+            send_message(
+                user_id,
+                "❌ Не удалось найти выбранную тренировку. Откройте расписание ещё раз.",
+                admin_back_keyboard(),
+            )
+
+        return True
 
     if state == "admin_participants_select":
 
@@ -3622,6 +3691,13 @@ def handle_text(
             )
             return
 
+        if text == "📅 Вся неделя":
+            show_schedule(
+                user_id,
+                None,
+            )
+            return
+
     # --------------------------------------------------------
     # SCHEDULE TRAINING
     # --------------------------------------------------------
@@ -3667,21 +3743,6 @@ def handle_text(
     # --------------------------------------------------------
 
     if user_id in ADMINS:
-
-        if state == "admin_schedule_select":
-
-            training = find_training_from_button(text)
-
-            if training:
-                admin_show_training(user_id, training)
-            else:
-                send_message(
-                    user_id,
-                    "❌ Не удалось найти выбранную тренировку. Откройте расписание ещё раз.",
-                    admin_back_keyboard(),
-                )
-
-            return
 
         if state == "admin_training_details":
 
@@ -3786,18 +3847,47 @@ def handle_text(
             }
 
             try:
-                date_text = lines[0].replace("/", ".").replace("-", ".").strip()
+                date_text = (
+                    lines[0]
+                    .replace("/", ".")
+                    .replace("—", ".")
+                    .replace("–", ".")
+                    .replace("-", ".")
+                    .strip()
+                )
+
+                # Поддерживаем и запись с номером строки без пробела:
+                # "1.07.10" -> "07.10".
+                numbered_short_date = re.match(
+                    r"^([1-7])\.(\d{1,2})\.(\d{1,2})$",
+                    date_text,
+                )
+                if numbered_short_date:
+                    date_text = (
+                        numbered_short_date.group(2)
+                        + "."
+                        + numbered_short_date.group(3)
+                    )
+
                 parsed_date = None
                 for date_format in ("%d.%m.%Y", "%d.%m.%y", "%d.%m"):
                     try:
-                        parsed_date = datetime.strptime(date_text, date_format).date()
+                        parsed_date = datetime.strptime(
+                            date_text,
+                            date_format,
+                        ).date()
                         if date_format == "%d.%m":
-                            parsed_date = parsed_date.replace(year=today_local().year)
+                            parsed_date = parsed_date.replace(
+                                year=today_local().year
+                            )
                         break
                     except ValueError:
                         continue
+
                 if parsed_date is None:
-                    raise ValueError("Дата: ДД.ММ.ГГГГ (например, 07.10.2026)")
+                    raise ValueError(
+                        "Дата: ДД.ММ.ГГГГ, ДД.ММ или ДД.ММ.ГГГГ с номером строки"
+                    )
 
                 lines[0] = parsed_date.strftime("%d.%m.%Y")
 

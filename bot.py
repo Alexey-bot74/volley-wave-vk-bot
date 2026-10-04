@@ -550,140 +550,34 @@ def training_selection_label(training):
 
 def format_training(
     training,
-    include_participants=True,
+    include_participants=False,
 ):
-    training_id = row_value(
-        training,
-        "id",
-    )
+    training_id = row_value(training, "id")
+    training_date = training_date_value(training)
+    start_time = row_value(training, "start_time", "")
+    end_time = row_value(training, "end_time", "")
+    level = row_value(training, "level", "")
+    training_format = row_value(training, "format", "")
+    coach = row_value(training, "coach", "")
+    price = row_value(training, "price", 0)
+    location = row_value(training, "location", "")
 
-    number = training_number(training)
-    training_date = training_date_value(
-        training
-    )
-
-    start_time = row_value(
-        training,
-        "start_time",
-        "",
-    )
-
-    end_time = row_value(
-        training,
-        "end_time",
-        "",
-    )
-
-    title = training_title(training)
-
-    category = row_value(
-        training,
-        "category",
-        "",
-    )
-
-    age_group = row_value(
-        training,
-        "age_group",
-        "",
-    )
-
-    level = row_value(
-        training,
-        "level",
-        "",
-    )
-
-    training_format = row_value(
-        training,
-        "format",
-        "",
-    )
-
-    coach = row_value(
-        training,
-        "coach",
-        "",
-    )
-
-    capacity = training_capacity(
-        training
-    )
-
-    price = row_value(
-        training,
-        "price",
-        0,
-    )
-
-    location = row_value(
-        training,
-        "location",
-        "",
-    )
-
-    status = row_value(
-        training,
-        "status",
-        "active",
-    )
+    if training_format == "Технический":
+        training_format = "Техничка"
 
     text = (
-        f"🏐 Тренировка №{number}\n"
         f"📅 {format_date(training_date)}\n"
         f"⏰ {start_time}–{end_time}\n"
-        f"📌 {title}\n"
+        f"🔹 Формат: {training_format}\n"
+        f"📊 Уровень: {level}\n"
+        f"🏅 Тренер: {coach}\n"
+        f"📍 Место: {location}\n"
+        f"💰 Цена: {price}₽"
     )
 
-    if category:
-        text += (
-            f"👥 Категория: {category}\n"
-        )
-
-    if age_group:
-        text += (
-            f"🎂 Возраст: {age_group}\n"
-        )
-
-    if level:
-        text += (
-            f"📊 Уровень: {level}\n"
-        )
-
-    if training_format:
-        text += (
-            f"🔹 Формат: {training_format}\n"
-        )
-
-    if coach:
-        text += (
-            f"🏅 Тренер: {coach}\n"
-        )
-
-    if location:
-        text += (
-            f"📍 {location}\n"
-        )
-
-    if price is not None:
-        text += (
-            f"💰 {price}₽\n"
-        )
-
     if include_participants and training_id:
-        count = get_training_participant_count(
-            training_id
-        )
-
-        text += (
-            f"\n👤 Записано: "
-            f"{count}/{capacity}"
-        )
-
-    if status != "active":
-        text += (
-            f"\n⚠️ Статус: {status}"
-        )
+        count = get_training_participant_count(training_id)
+        text += f"\n\n👥 Записано: {count}/{training_capacity(training)}"
 
     return text
 
@@ -758,12 +652,6 @@ def show_schedule_categories(user_id):
                 ],
                 [
                     button(
-                        "🏠 Все тренировки",
-                        "secondary",
-                    ),
-                ],
-                [
-                    button(
                         "⬅️ Назад",
                         "secondary",
                     ),
@@ -778,9 +666,7 @@ def show_schedule(
     category=None,
 ):
     today = today_local()
-    end_date = today + timedelta(
-        days=7
-    )
+    end_date = today + timedelta(days=6)
 
     try:
         if category == "children":
@@ -789,85 +675,48 @@ def show_schedule(
                 to_date=end_date.isoformat(),
                 category="Дети",
             )
-
         elif category == "adults":
             trainings = get_upcoming_trainings(
                 from_date=today.isoformat(),
                 to_date=end_date.isoformat(),
                 category="Взрослые",
             )
-
         else:
             trainings = get_upcoming_trainings(
                 from_date=today.isoformat(),
                 to_date=end_date.isoformat(),
             )
-
     except Exception:
-        logger.exception(
-            "Failed to load schedule"
-        )
+        logger.exception("Failed to load schedule")
         trainings = []
 
-    trainings = list(
-        trainings or []
-    )
-
+    trainings = list(trainings or [])
     if not trainings:
-        send_message(
-            user_id,
-            "📅 На ближайшие 7 дней "
-            "тренировок нет.",
-            back_keyboard(user_id),
-        )
+        send_message(user_id, "📅 На ближайшую неделю тренировок нет.", back_keyboard(user_id))
         return
 
-    buttons = []
-
+    grouped = {}
     for training in trainings:
-        training_date = training_date_value(
-            training
-        )
+        current_date = training_date_value(training)
+        grouped.setdefault(current_date, []).append(training)
 
-        label = training_selection_label(
-            training
-        )
+    text = "📅 РАСПИСАНИЕ НА НЕДЕЛЮ\n\n"
+    for current_date in sorted(grouped):
+        text += f"📌 {format_date(current_date)}\n"
+        for training in grouped[current_date]:
+            start_time = row_value(training, "start_time", "")
+            end_time = row_value(training, "end_time", "")
+            training_format = row_value(training, "format", "") or ""
+            level = row_value(training, "level", "") or ""
+            coach = row_value(training, "coach", "") or ""
+            price = row_value(training, "price", 0)
+            if training_format == "Технический":
+                training_format = "Техничка"
+            text += f"\n⏰ {start_time}–{end_time} | {training_format} | {level}\n"
+            text += f"🏅 {coach} | 💰 {price}₽\n"
+        text += "\n"
 
-        buttons.append(
-            [
-                button(
-                    label[:40],
-                    "primary",
-                )
-            ]
-        )
-
-    buttons.append(
-        [
-            button(
-                "⬅️ Назад",
-                "secondary",
-            )
-        ]
-    )
-
-    set_state(
-        user_id,
-        "schedule_select_training",
-        {
-            "category": category,
-        },
-    )
-
-    send_message(
-        user_id,
-        "📅 Ближайшие тренировки:\n\n"
-        "Выберите тренировку:",
-        {
-            "one_time": False,
-            "buttons": buttons,
-        },
-    )
+    send_message(user_id, text.rstrip(), back_keyboard(user_id))
 
 
 # ============================================================
@@ -895,12 +744,6 @@ def show_booking_categories(user_id):
                     button(
                         "🧑 Взрослые",
                         "primary",
-                    ),
-                ],
-                [
-                    button(
-                        "🏠 Все тренировки",
-                        "secondary",
                     ),
                 ],
                 [
@@ -1273,15 +1116,16 @@ def register_user_for_training(
         )
         return
 
-    if row_value(
+    status = row_value(
         training,
         "status",
-        "active",
-    ) != "active":
+        "scheduled",
+    )
+
+    if status not in ("scheduled", "active"):
         send_message(
             user_id,
-            "❌ Эта тренировка "
-            "недоступна для записи.",
+            "❌ Эта тренировка недоступна для записи.",
             back_keyboard(user_id),
         )
         return
@@ -1753,7 +1597,7 @@ DEFAULT_TEMPLATES = [
         "category": "Дети",
         "age_group": "9–13",
         "level": "Начальный / средний",
-        "format": "Группа",
+        "format": "Тренировка",
         "coach": "Алексей",
         "capacity": 10,
         "price": 600,
@@ -1767,7 +1611,7 @@ DEFAULT_TEMPLATES = [
         "category": "Дети",
         "age_group": "11–14",
         "level": "Средний",
-        "format": "Группа",
+        "format": "Тренировка",
         "coach": "Алексей",
         "capacity": 10,
         "price": 600,
@@ -1780,8 +1624,8 @@ DEFAULT_TEMPLATES = [
         "title": "Техническая тренировка",
         "category": "Взрослые",
         "age_group": "18+",
-        "level": "Технический",
-        "format": "Группа",
+        "level": "Продвинутый",
+        "format": "Тренировка",
         "coach": "Алексей",
         "capacity": 10,
         "price": 1200,
@@ -1795,7 +1639,7 @@ DEFAULT_TEMPLATES = [
         "category": "Взрослые",
         "age_group": "18+",
         "level": "Общий",
-        "format": "Группа",
+        "format": "Тренировка",
         "coach": "Алексей",
         "capacity": 8,
         "price": 1200,
@@ -1809,7 +1653,7 @@ DEFAULT_TEMPLATES = [
         "category": "Дети",
         "age_group": "11–14",
         "level": "Средний",
-        "format": "Группа",
+        "format": "Тренировка",
         "coach": "Алексей",
         "capacity": 10,
         "price": 600,
@@ -1837,7 +1681,7 @@ DEFAULT_TEMPLATES = [
         "category": "Дети",
         "age_group": "9–14",
         "level": "Начальный / средний",
-        "format": "Группа",
+        "format": "Тренировка",
         "coach": "Алексей",
         "capacity": 10,
         "price": 600,
@@ -1851,7 +1695,7 @@ DEFAULT_TEMPLATES = [
         "category": "Дети",
         "age_group": "5–9",
         "level": "Начальный",
-        "format": "Группа",
+        "format": "Тренировка",
         "coach": "Ксения",
         "capacity": 10,
         "price": 600,
@@ -1865,7 +1709,7 @@ DEFAULT_TEMPLATES = [
         "category": "Взрослые",
         "age_group": "18+",
         "level": "Продвинутый",
-        "format": "Группа",
+        "format": "Тренировка",
         "coach": "Алексей",
         "capacity": 8,
         "price": 1200,
@@ -1893,7 +1737,7 @@ DEFAULT_TEMPLATES = [
         "category": "Взрослые",
         "age_group": "18+",
         "level": "Общий",
-        "format": "Группа",
+        "format": "Тренировка",
         "coach": "Алексей",
         "capacity": 8,
         "price": 1200,
@@ -1907,7 +1751,7 @@ DEFAULT_TEMPLATES = [
         "category": "Дети",
         "age_group": "11–14",
         "level": "Средний",
-        "format": "Группа",
+        "format": "Тренировка",
         "coach": "Алексей",
         "capacity": 10,
         "price": 600,
@@ -1921,7 +1765,7 @@ DEFAULT_TEMPLATES = [
         "category": "Взрослые",
         "age_group": "18+",
         "level": "Средний",
-        "format": "Группа",
+        "format": "Тренировка",
         "coach": "Алексей",
         "capacity": 8,
         "price": 1200,
@@ -1935,7 +1779,7 @@ DEFAULT_TEMPLATES = [
         "category": "Дети",
         "age_group": "9–14",
         "level": "Начальный / средний",
-        "format": "Группа",
+        "format": "Тренировка",
         "coach": "Алексей",
         "capacity": 10,
         "price": 600,
@@ -1949,7 +1793,7 @@ DEFAULT_TEMPLATES = [
         "category": "Дети",
         "age_group": "5–10",
         "level": "Начальный",
-        "format": "Группа",
+        "format": "Тренировка",
         "coach": "Ксения",
         "capacity": 10,
         "price": 600,
@@ -1963,7 +1807,7 @@ DEFAULT_TEMPLATES = [
         "category": "Дети",
         "age_group": "11–14",
         "level": "Средний",
-        "format": "Группа",
+        "format": "Тренировка",
         "coach": "Алексей",
         "capacity": 10,
         "price": 600,
@@ -1976,8 +1820,8 @@ DEFAULT_TEMPLATES = [
         "title": "Техническая тренировка",
         "category": "Взрослые",
         "age_group": "18+",
-        "level": "Технический",
-        "format": "Группа",
+        "level": "Продвинутый",
+        "format": "Тренировка",
         "coach": "Алексей",
         "capacity": 10,
         "price": 1200,
@@ -2439,7 +2283,7 @@ def admin_show_schedule(user_id):
 
     end_date = (
         today
-        + timedelta(days=14)
+        + timedelta(days=6)
     )
 
     trainings = admin_db_trainings(
@@ -2454,7 +2298,7 @@ def admin_show_schedule(user_id):
     if not trainings:
         send_message(
             user_id,
-            "📅 На ближайшие 14 дней "
+            "📅 На ближайшие 7 дней "
             "тренировок нет.",
             admin_back_keyboard(),
         )
@@ -2854,31 +2698,19 @@ def admin_start_add_training(user_id):
     if user_id not in ADMINS:
         return
 
-    set_state(
-        user_id,
-        "admin_add_training",
-        {},
-    )
+    set_state(user_id, "admin_add_training", {})
 
     send_message(
         user_id,
         "➕ ДОБАВЛЕНИЕ ТРЕНИРОВКИ\n\n"
-        "Отправьте ОДНИМ сообщением 7 строк:\n\n"
-        "1. Дата — ДД.ММ.ГГГГ\n"
-        "2. Время — ЧЧ:ММ–ЧЧ:ММ\n"
-        "3. Формат — Техничка / Женская / Миксты / Мужская / Тренировка\n"
-        "4. Уровень — Начальный / Средний / Продвинутый\n"
-        "5. Стоимость — число\n"
+        "Отправьте одним сообщением 7 строк:\n\n"
+        "1. Дата\n"
+        "2. Время\n"
+        "3. Формат\n"
+        "4. Уровень\n"
+        "5. Стоимость\n"
         "6. Тренер\n"
-        "7. Место\n\n"
-        "Пример:\n"
-        "05.10.2026\n"
-        "17:00–19:00\n"
-        "Миксты\n"
-        "Средний\n"
-        "800\n"
-        "Алексей\n"
-        "СК «Арена», ул. Молодогвардейцев, 7",
+        "7. Место",
         admin_back_keyboard(),
     )
 
@@ -3049,13 +2881,19 @@ def contact_admins(
         },
     )
 
-    send_message(
-        user_id,
-        "✍️ Напишите сообщение "
-        "одним сообщением.\n\n"
-        "Мы передадим его администраторам.",
-        back_keyboard(user_id),
-    )
+    if subject == "Индивидуальная тренировка":
+        message = (
+            "🎯 ИНДИВИДУАЛЬНАЯ ТРЕНИРОВКА\n\n"
+            "Для подробной информации напишите сообщение одним сообщением.\n\n"
+            "Мы передадим его администратору."
+        )
+    else:
+        message = (
+            "✍️ Напишите сообщение одним сообщением.\n\n"
+            "Мы передадим его администраторам."
+        )
+
+    send_message(user_id, message, back_keyboard(user_id))
 
 
 def send_question_to_admins(
@@ -3207,7 +3045,7 @@ def admin_show_participants_list(
 
     end_date = (
         today
-        + timedelta(days=14)
+        + timedelta(days=6)
     )
 
     trainings = admin_db_trainings(
@@ -3222,7 +3060,7 @@ def admin_show_participants_list(
     if not trainings:
         send_message(
             user_id,
-            "👥 На ближайшие 14 дней "
+            "👥 На ближайшие 7 дней "
             "тренировок нет.",
             admin_back_keyboard(),
         )
@@ -3718,13 +3556,6 @@ def handle_text(
             )
             return
 
-        if text == "🏠 Все тренировки":
-            show_schedule(
-                user_id,
-                None,
-            )
-            return
-
     # --------------------------------------------------------
     # SCHEDULE TRAINING
     # --------------------------------------------------------
@@ -3860,15 +3691,7 @@ def handle_text(
                     "4. Уровень\n"
                     "5. Стоимость\n"
                     "6. Тренер\n"
-                    "7. Место\n\n"
-                    "Пример:\n"
-                    "05.10.2026\n"
-                    "17:00–19:00\n"
-                    "Миксты\n"
-                    "Средний\n"
-                    "800\n"
-                    "Алексей\n"
-                    "СК «Арена», ул. Молодогвардейцев, 7",
+                    "7. Место",
                     admin_back_keyboard(),
                 )
                 return
@@ -4174,7 +3997,7 @@ def startup():
 
         end_date = (
             today
-            + timedelta(days=14)
+            + timedelta(days=6)
         )
 
         trainings = admin_db_trainings(

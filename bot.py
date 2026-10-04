@@ -232,10 +232,6 @@ def admin_menu():
                     "📅 Расписание",
                     "secondary",
                 ),
-                button(
-                    "👥 Участники тренировок",
-                    "secondary",
-                ),
             ],
             [
                 button(
@@ -628,152 +624,82 @@ def show_locations(user_id):
 # ============================================================
 
 def show_schedule_categories(user_id):
-    set_state(
-        user_id,
-        "schedule_category",
-    )
-
+    set_state(user_id, "schedule_category", {})
     send_message(
         user_id,
-        "📅 РАСПИСАНИЕ\n\n"
-        "Выберите категорию:",
+        "📅 РАСПИСАНИЕ\n\nВыберите категорию:",
         {
             "one_time": False,
             "buttons": [
-                [
-                    button(
-                        "👧 Дети",
-                        "primary",
-                    ),
-                    button(
-                        "🧑 Взрослые",
-                        "primary",
-                    ),
-                ],
-                [
-                    button(
-                        "📅 Вся неделя",
-                        "positive",
-                    ),
-                ],
-                [
-                    button(
-                        "⬅️ Назад",
-                        "secondary",
-                    ),
-                ],
+                [button("👧 Дети", "primary"), button("🧑 Взрослые", "primary")],
+                [button("⬅️ Назад", "secondary")],
             ],
         },
     )
 
 
-def compact_keyboard_buttons(buttons, max_rows=10):
-    """Compact one-button rows into two-button rows for VK keyboard limits."""
-    compact = []
-    row = []
-
-    for item in buttons:
-        if not item:
-            continue
-        for btn in item:
-            row.append(btn)
-            if len(row) == 2:
-                compact.append(row)
-                row = []
-
-    if row:
-        compact.append(row)
-
-    if len(compact) <= max_rows:
-        return compact
-
-    # Safety fallback: keep the keyboard within VK's row limit.
-    return compact[:max_rows]
+def schedule_training_button(training):
+    number = training_number(training)
+    start_time = row_value(training, "start_time", "")
+    training_format = row_value(training, "format", "") or ""
+    level = row_value(training, "level", "") or ""
+    if training_format == "Технический":
+        training_format = "Техничка"
+    return button(f"№{number} {start_time} | {training_format} | {level}"[:40], "primary")
 
 
-def show_schedule(
-    user_id,
-    category=None,
-):
+def show_schedule(user_id, category=None):
     today = today_local()
     end_date = today + timedelta(days=6)
+    category_name = "Дети" if category == "children" else "Взрослые"
 
     try:
-        if category == "children":
-            trainings = get_upcoming_trainings(
-                from_date=today.isoformat(),
-                to_date=end_date.isoformat(),
-                category="Дети",
-            )
-        elif category == "adults":
-            trainings = get_upcoming_trainings(
-                from_date=today.isoformat(),
-                to_date=end_date.isoformat(),
-                category="Взрослые",
-            )
-        else:
-            trainings = get_upcoming_trainings(
-                from_date=today.isoformat(),
-                to_date=end_date.isoformat(),
-            )
-    except Exception as error:
-        logger.exception("Failed to load schedule")
-        send_message(
-            user_id,
-            "❌ Не удалось загрузить расписание.\n\n"
-            "Ошибка записана в лог Render.",
-            back_keyboard(user_id),
+        trainings = get_upcoming_trainings(
+            from_date=today.isoformat(),
+            to_date=end_date.isoformat(),
+            category=category_name,
         )
+    except Exception:
+        logger.exception("Failed to load schedule category=%s", category)
+        send_message(user_id, "❌ Не удалось загрузить расписание.\n\nОшибка записана в лог Render.", back_keyboard(user_id))
         return
 
     trainings = list(trainings or [])
     if not trainings:
-        send_message(user_id, "📅 На ближайшую неделю тренировок нет.", back_keyboard(user_id))
+        send_message(user_id, f"📅 РАСПИСАНИЕ — {category_name.upper()}\n\nНа ближайшую неделю тренировок нет.", back_keyboard(user_id))
         return
 
     grouped = {}
     for training in trainings:
-        current_date = training_date_value(training)
-        grouped.setdefault(current_date, []).append(training)
+        grouped.setdefault(training_date_value(training), []).append(training)
 
-    text = "📅 РАСПИСАНИЕ НА НЕДЕЛЮ\n\n"
+    text = f"📅 РАСПИСАНИЕ — {category_name.upper()}\n\n"
     buttons = []
-
     for current_date in sorted(grouped):
         text += f"📌 {format_date(current_date)}\n"
+        row = []
         for training in grouped[current_date]:
-            training_id = row_value(training, "id")
-            number = training_number(training)
             start_time = row_value(training, "start_time", "")
             end_time = row_value(training, "end_time", "")
             training_format = row_value(training, "format", "") or ""
             level = row_value(training, "level", "") or ""
-            coach = row_value(training, "coach", "") or ""
-            price = row_value(training, "price", 0)
             if training_format == "Технический":
                 training_format = "Техничка"
-            text += f"\n⏰ {start_time}–{end_time} | {training_format} | {level}\n"
-            text += f"🏅 {coach} | 💰 {price}₽\n"
-            buttons.append([
-                button(
-                    f"📝 №{number} {start_time}–{end_time}",
-                    "primary",
-                )
-            ])
+            text += f"⏰ {start_time}–{end_time} | {training_format} | {level}\n"
+            row.append(schedule_training_button(training))
+            if len(row) == 2:
+                buttons.append(row)
+                row = []
+        if row:
+            buttons.append(row)
         text += "\n"
 
-    buttons.append([
-        button("⬅️ Назад", "secondary"),
-        button("🏠 Главное меню", "secondary"),
-    ])
-    buttons = compact_keyboard_buttons(buttons, max_rows=10)
+    buttons.append([button("⬅️ Назад", "secondary"), button("🏠 Главное меню", "secondary")])
+    if len(buttons) > 10:
+        buttons = buttons[:8] + buttons[-1:]
 
     set_state(user_id, "schedule_week", {"category": category})
-    send_message(
-        user_id,
-        text.rstrip() + "\n\n📝 Нажмите кнопку тренировки, чтобы сразу перейти к записи.",
-        {"one_time": False, "buttons": buttons},
-    )
+    send_message(user_id, text.rstrip() + "\n\n📝 Нажмите кнопку тренировки, чтобы сразу увидеть участников и записаться.", {"one_time": False, "buttons": buttons})
 
 
 # ============================================================
@@ -3072,41 +2998,21 @@ def parse_short_date_button(text):
 
 
 def find_training_from_button(text):
-    if not text.startswith("№"):
+    """Find training by number from any schedule button label."""
+    import re
+    text = str(text or "").strip()
+    match = re.search(r"№\s*(\d+)", text)
+    if not match:
         return None
-
-    try:
-        number_part = (
-            text.split()[0]
-        )
-
-        number = int(
-            number_part.replace(
-                "№",
-                "",
-            )
-        )
-
-    except Exception:
-        return None
-
+    number = int(match.group(1))
     connection = get_connection()
-
     try:
         cursor = connection.cursor()
-
         cursor.execute(
-            """
-            SELECT *
-            FROM trainings
-            WHERE training_number = ?
-            LIMIT 1
-            """,
+            "SELECT * FROM trainings WHERE CAST(training_number AS INTEGER) = ? LIMIT 1",
             (number,),
         )
-
         return cursor.fetchone()
-
     finally:
         connection.close()
 
@@ -3234,6 +3140,7 @@ def handle_admin_extra_state(
 
     if state == "admin_schedule_select":
 
+        logger.info("ADMIN schedule selection user=%s state=%s text=%r", user_id, state, text)
         training = find_training_from_button(text)
 
         if training:
@@ -3318,9 +3225,6 @@ def handle_text(
             admin_show_schedule(user_id)
             return
 
-        if text == "👥 Участники тренировок":
-            admin_show_participants_list(user_id)
-            return
 
         if text == "➕ Добавить тренировку":
             admin_start_add_training(user_id)
@@ -3355,11 +3259,6 @@ def handle_text(
             )
             return
 
-        if text == "👥 Участники тренировок":
-            admin_show_participants_list(
-                user_id
-            )
-            return
 
         if text == "➕ Добавить тренировку":
             admin_start_add_training(
@@ -3718,12 +3617,6 @@ def handle_text(
             )
             return
 
-        if text == "📅 Вся неделя":
-            show_schedule(
-                user_id,
-                None,
-            )
-            return
 
     # --------------------------------------------------------
     # SCHEDULE TRAINING
@@ -3859,18 +3752,22 @@ def handle_text(
                 )
                 return
 
-            formats = {
-                "Техничка",
-                "Женская",
-                "Миксты",
-                "Мужская",
-                "Тренировка",
+            format_aliases = {
+                "техничка": "Техничка",
+                "технический": "Техничка",
+                "женская": "Женская",
+                "женская тренировка": "Женская",
+                "миксты": "Миксты",
+                "микст": "Миксты",
+                "мужская": "Мужская",
+                "мужская тренировка": "Мужская",
+                "тренировка": "Тренировка",
             }
 
-            levels = {
-                "Начальный",
-                "Средний",
-                "Продвинутый",
+            level_aliases = {
+                "начальный": "Начальный",
+                "средний": "Средний",
+                "продвинутый": "Продвинутый",
             }
 
             try:
@@ -3956,15 +3853,14 @@ def handle_text(
                         "Время окончания должно быть позже времени начала"
                     )
 
-                if lines[2] not in formats:
-                    raise ValueError(
-                        "Неизвестный формат тренировки"
-                    )
-
-                if lines[3] not in levels:
-                    raise ValueError(
-                        "Неизвестный уровень"
-                    )
+                format_key = re.sub(r"\s+", " ", lines[2].strip().lower())
+                level_key = re.sub(r"\s+", " ", lines[3].strip().lower())
+                if format_key not in format_aliases:
+                    raise ValueError("Неизвестный формат тренировки. Можно: техничка, женская, миксты, мужская, тренировка.")
+                if level_key not in level_aliases:
+                    raise ValueError("Неизвестный уровень. Можно: начальный, средний, продвинутый.")
+                lines[2] = format_aliases[format_key]
+                lines[3] = level_aliases[level_key]
 
                 price_text = (
                     lines[4]

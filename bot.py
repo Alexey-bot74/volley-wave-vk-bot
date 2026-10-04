@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import re
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 
@@ -2349,6 +2350,7 @@ def admin_show_schedule(user_id):
 
         label = (
             f"{WEEKDAYS_SHORT[training_date.weekday()]} "
+            f"{training_date.strftime('%d.%m')} "
             f"{row_value(training, 'start_time', '')} | "
             f"{training_format} | {count}/{capacity}"
         )
@@ -2450,6 +2452,16 @@ def admin_show_training(
     buttons = [
         [
             button(
+                "✏️ Редактировать",
+                "primary",
+            ),
+            button(
+                "🗑 Удалить тренировку",
+                "negative",
+            ),
+        ],
+        [
+            button(
                 "📋 Посещаемость",
                 "secondary",
             )
@@ -2478,6 +2490,69 @@ def admin_show_training(
             "buttons": buttons,
         },
     )
+
+
+def admin_update_training(training_id, data):
+    connection = get_connection()
+
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            UPDATE trainings
+            SET training_date = ?,
+                weekday = ?,
+                start_time = ?,
+                end_time = ?,
+                title = ?,
+                level = ?,
+                format = ?,
+                coach = ?,
+                price = ?,
+                location = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (
+                data["training_date"],
+                data["weekday"],
+                data["start_time"],
+                data["end_time"],
+                data["title"],
+                data["level"],
+                data["format"],
+                data["coach"],
+                data["price"],
+                data["location"],
+                training_id,
+            ),
+        )
+        if cursor.rowcount == 0:
+            raise ValueError("Тренировка не найдена")
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def admin_delete_training(training_id):
+    connection = get_connection()
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            "DELETE FROM trainings WHERE id = ?",
+            (training_id,),
+        )
+        if cursor.rowcount == 0:
+            raise ValueError("Тренировка не найдена")
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
 
 
 # ============================================================
@@ -2755,6 +2830,161 @@ def admin_show_attendance(
         text,
         admin_back_keyboard(),
     )
+
+
+def admin_start_edit_training(user_id, training_id):
+    if user_id not in ADMINS:
+        return
+
+    training = admin_db_training(training_id)
+    if not training:
+        send_message(user_id, "❌ Тренировка не найдена.", admin_back_keyboard())
+        return
+
+    set_state(user_id, "admin_edit_training", {"training_id": training_id})
+    training_date = training_date_value(training)
+    time_line = (
+        f"{row_value(training, 'start_time', '')}–"
+        f"{row_value(training, 'end_time', '')}"
+    )
+    message = (
+        "✏️ РЕДАКТИРОВАНИЕ ТРЕНИРОВКИ\n\n"
+        "Отправьте одним сообщением 7 строк:\n\n"
+        f"1. {training_date.strftime('%d.%m.%Y')}\n"
+        f"2. {time_line}\n"
+        f"3. {row_value(training, 'format', '')}\n"
+        f"4. {row_value(training, 'level', '')}\n"
+        f"5. {row_value(training, 'price', 0)}\n"
+        f"6. {row_value(training, 'coach', '')}\n"
+        f"7. {row_value(training, 'location', '')}\n\n"
+        "Измените нужные строки и отправьте их снова.\n"
+        "Категория и вместимость сохранятся без изменений."
+    )
+    send_message(user_id, message, admin_back_keyboard())
+
+
+def admin_confirm_delete_training(user_id, training_id):
+    if user_id not in ADMINS:
+        return
+
+    training = admin_db_training(training_id)
+    if not training:
+        send_message(user_id, "❌ Тренировка не найдена.", admin_back_keyboard())
+        return
+
+    set_state(user_id, "admin_delete_training", {"training_id": training_id})
+    count = get_training_participant_count(training_id)
+    text = (
+        "🗑 УДАЛЕНИЕ ТРЕНИРОВКИ\n\n"
+        + format_training(training)
+        + f"\n\n👥 Записано: {count}/{training_capacity(training)}\n\n"
+        "Удалить эту тренировку?"
+    )
+    send_message(
+        user_id,
+        text,
+        {
+            "one_time": False,
+            "buttons": [[
+                button("🗑 Да, удалить", "negative"),
+                button("⬅️ Назад", "secondary"),
+            ]],
+        },
+    )
+
+
+def admin_save_edited_training(user_id, training_id, data):
+    try:
+        raw_date = str(data["date"]).strip()
+        parsed_date = None
+        for date_format in ("%d.%m.%Y", "%d.%m.%y", "%d.%m"):
+            try:
+                parsed_date = datetime.strptime(raw_date, date_format).date()
+                if date_format == "%d.%m":
+                    parsed_date = parsed_date.replace(year=today_local().year)
+                break
+            except ValueError:
+                continue
+        if parsed_date is None:
+            raise ValueError("Дата должна быть в формате ДД.ММ.ГГГГ или ДД.ММ")
+
+        start_time = data["start_time"]
+        end_time = data["end_time"]
+        datetime.strptime(start_time, "%H:%M")
+        datetime.strptime(end_time, "%H:%M")
+        if start_time >= end_time:
+            raise ValueError("Время окончания должно быть позже времени начала")
+
+        format_aliases = {
+            "техничка": "Техничка",
+            "технический": "Техничка",
+            "женская": "Женская",
+            "женская тренировка": "Женская",
+            "миксты": "Миксты",
+            "микст": "Миксты",
+            "мужская": "Мужская",
+            "мужская тренировка": "Мужская",
+            "тренировка": "Тренировка",
+        }
+        level_aliases = {
+            "начальный": "Начальный",
+            "средний": "Средний",
+            "продвинутый": "Продвинутый",
+        }
+        format_key = re.sub(r"\s+", " ", data["format"].strip().lower())
+        level_key = re.sub(r"\s+", " ", data["level"].strip().lower())
+        if format_key not in format_aliases:
+            raise ValueError("Неизвестный формат тренировки")
+        if level_key not in level_aliases:
+            raise ValueError("Неизвестный уровень тренировки")
+
+        price = int(
+            str(data["price"])
+            .replace("₽", "")
+            .replace("руб.", "")
+            .replace("руб", "")
+            .strip()
+        )
+        if price < 0:
+            raise ValueError("Стоимость не может быть отрицательной")
+        if not data["coach"].strip():
+            raise ValueError("Не указан тренер")
+        if not data["location"].strip():
+            raise ValueError("Не указано место")
+
+        training_data = {
+            "training_date": parsed_date.isoformat(),
+            "weekday": parsed_date.weekday(),
+            "start_time": start_time,
+            "end_time": end_time,
+            "title": format_aliases[format_key],
+            "level": level_aliases[level_key],
+            "format": format_aliases[format_key],
+            "coach": data["coach"].strip(),
+            "price": price,
+            "location": data["location"].strip(),
+        }
+        admin_update_training(training_id, training_data)
+        add_admin_log(
+            user_id,
+            "training_update",
+            "training",
+            training_id,
+            f"Training updated: {training_data}",
+        )
+        training = admin_db_training(training_id)
+        admin_show_training(user_id, training)
+        send_message(user_id, "✅ Тренировка обновлена.")
+    except Exception as error:
+        logger.exception("ADMIN EDIT TRAINING ERROR")
+        send_message(
+            user_id,
+            "❌ Не удалось изменить тренировку.\n\n"
+            f"{error}\n\n"
+            "Отправьте 7 строк ещё раз.",
+            admin_back_keyboard(),
+        )
+        set_state(user_id, "admin_edit_training", {"training_id": training_id})
 
 
 # ============================================================
@@ -3257,12 +3487,12 @@ def admin_show_participants_list(
             )
         )
 
+        training_date = training_date_value(training)
         label = (
-            f"№{training_number(training)} "
-            f"{format_short_date(training_date_value(training))} "
-            f"{row_value(training, 'start_time', '')} "
-            f"({count}/"
-            f"{training_capacity(training)})"
+            f"{WEEKDAYS_SHORT[training_date.weekday()]} "
+            f"{training_date.strftime('%d.%m')} "
+            f"{row_value(training, 'start_time', '')} | "
+            f"{count}/{training_capacity(training)}"
         )
 
         buttons.append(
@@ -3439,6 +3669,13 @@ def handle_text(
         show_main_menu(user_id)
         return
 
+    if text == "⬅️ Админ-панель":
+        if user_id in ADMINS:
+            show_admin_menu(user_id)
+        else:
+            show_main_menu(user_id)
+        return
+
     if text == "⬅️ Назад":
         state = get_state(
             user_id
@@ -3541,19 +3778,16 @@ def handle_text(
     # --------------------------------------------------------
 
     if state == "schedule_week":
-        # Кнопки расписания:
-        # №12 17:00 | Миксты | Средний
-        if "№" in text:
-            training = find_training_from_button(text)
-            if training:
-                show_training_for_booking(user_id, training)
-            else:
-                send_message(
-                    user_id,
-                    "❌ Тренировка не найдена. Откройте расписание ещё раз.",
-                    back_keyboard(user_id),
-                )
-            return
+        training = find_training_from_button(text)
+        if training:
+            show_training_for_booking(user_id, training)
+        else:
+            send_message(
+                user_id,
+                "❌ Тренировка не найдена. Откройте расписание ещё раз.",
+                back_keyboard(user_id),
+            )
+        return
 
     # --------------------------------------------------------
     # BOOKING CATEGORY
@@ -3868,6 +4102,120 @@ def handle_text(
                     )
 
                 return
+
+        if state == "admin_training_details":
+            training_id = state_data.get("training_id")
+            if text == "✏️ Редактировать":
+                admin_start_edit_training(user_id, training_id)
+                return
+            if text == "🗑 Удалить тренировку":
+                admin_confirm_delete_training(user_id, training_id)
+                return
+            if text == "📋 Посещаемость":
+                admin_show_attendance(user_id, training_id)
+                return
+
+        if state == "admin_delete_training":
+            training_id = state_data.get("training_id")
+            if text == "🗑 Да, удалить":
+                try:
+                    admin_delete_training(training_id)
+                    add_admin_log(
+                        user_id,
+                        "training_delete",
+                        "training",
+                        training_id,
+                        "Training deleted",
+                    )
+                    show_admin_menu(user_id)
+                    send_message(user_id, "✅ Тренировка удалена.", admin_menu())
+                except Exception as error:
+                    logger.exception("ADMIN DELETE TRAINING ERROR")
+                    send_message(
+                        user_id,
+                        "❌ Не удалось удалить тренировку.\n\n"
+                        f"Ошибка: {error}",
+                        admin_back_keyboard(),
+                    )
+                return
+
+        if state == "admin_edit_training":
+            lines = [line.strip() for line in text.splitlines() if line.strip()]
+            lines = [
+                re.sub(r"^\s*\d+\s*[.)]\s*", "", line).strip()
+                for line in lines
+            ]
+            if len(lines) != 7:
+                send_message(
+                    user_id,
+                    "❌ Нужно ровно 7 строк:\n\n"
+                    "1. Дата\n2. Время\n3. Формат\n4. Уровень\n5. Стоимость\n6. Тренер\n7. Место",
+                    admin_back_keyboard(),
+                )
+                return
+            try:
+                date_text = (
+                    lines[0].replace("/", ".")
+                    .replace("—", ".")
+                    .replace("–", ".")
+                    .replace("-", ".")
+                    .strip()
+                )
+                parsed_date = None
+                for date_format in ("%d.%m.%Y", "%d.%m.%y", "%d.%m"):
+                    try:
+                        parsed_date = datetime.strptime(date_text, date_format).date()
+                        if date_format == "%d.%m":
+                            parsed_date = parsed_date.replace(year=today_local().year)
+                        break
+                    except ValueError:
+                        continue
+                if parsed_date is None:
+                    raise ValueError("Дата: ДД.ММ.ГГГГ или ДД.ММ")
+
+                time_line = lines[1].replace("—", "–").replace("-", "–")
+                if "–" not in time_line:
+                    raise ValueError("Время нужно указать как ЧЧ:ММ–ЧЧ:ММ")
+                start_time, end_time = [x.strip() for x in time_line.split("–", 1)]
+                datetime.strptime(start_time, "%H:%M")
+                datetime.strptime(end_time, "%H:%M")
+                if start_time >= end_time:
+                    raise ValueError("Время окончания должно быть позже времени начала")
+
+                price_text = (
+                    lines[4].replace("₽", "")
+                    .replace("руб.", "")
+                    .replace("руб", "")
+                    .strip()
+                )
+                data = {
+                    "date": parsed_date.strftime("%d.%m.%Y"),
+                    "start_time": start_time,
+                    "end_time": end_time,
+                    "format": lines[2],
+                    "level": lines[3],
+                    "price": price_text,
+                    "coach": lines[5],
+                    "location": lines[6],
+                }
+                admin_save_edited_training(
+                    user_id,
+                    state_data.get("training_id"),
+                    data,
+                )
+            except (ValueError, TypeError) as error:
+                send_message(
+                    user_id,
+                    "❌ Не удалось разобрать изменения.\n\n"
+                    f"{error}\n\nОтправьте 7 строк ещё раз.",
+                    admin_back_keyboard(),
+                )
+                set_state(
+                    user_id,
+                    "admin_edit_training",
+                    {"training_id": state_data.get("training_id")},
+                )
+            return
 
         # ----------------------------------------------------
         # ADD TRAINING — ONE MESSAGE

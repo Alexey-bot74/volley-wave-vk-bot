@@ -543,46 +543,23 @@ def training_is_full(training):
 
 
 def training_selection_label(training):
-    """Короткая подпись кнопки: время + формат + уровень."""
+    """Короткая подпись кнопки: день, дата, время, формат и уровень."""
 
-    start_time = row_value(
-        training,
-        "start_time",
-        "",
-    )
+    training_date = training_date_value(training)
+    start_time = row_value(training, "start_time", "")
+    end_time = row_value(training, "end_time", "")
+    training_format = row_value(training, "format", "") or ""
+    level = row_value(training, "level", "") or ""
 
-    end_time = row_value(
-        training,
-        "end_time",
-        "",
-    )
+    if training_format == "Технический":
+        training_format = "Техничка"
 
-    training_format = row_value(
-        training,
-        "format",
-        "",
-    )
-
-    level = row_value(
-        training,
-        "level",
-        "",
-    )
-
-    number = training_number(training)
-
-    parts = [
-        f"№{number}",
-        f"{start_time}–{end_time}",
-    ]
-
-    if training_format:
-        parts.append(str(training_format))
-
-    if level:
-        parts.append(str(level))
-
-    return " ".join(parts)[:40]
+    return (
+        f"{WEEKDAYS_SHORT[training_date.weekday()]} "
+        f"{training_date.strftime('%d.%m')} "
+        f"{start_time}–{end_time} | "
+        f"{training_format} | {level}"
+    )[:40]
 
 
 def format_training(
@@ -680,13 +657,20 @@ def show_schedule_categories(user_id):
 
 
 def schedule_training_button(training):
-    number = training_number(training)
+    training_date = training_date_value(training)
     start_time = row_value(training, "start_time", "")
     training_format = row_value(training, "format", "") or ""
     level = row_value(training, "level", "") or ""
+
     if training_format == "Технический":
         training_format = "Техничка"
-    return button(f"№{number} {start_time} | {training_format} | {level}"[:40], "primary")
+
+    return button(
+        f"{WEEKDAYS_SHORT[training_date.weekday()]} "
+        f"{training_date.strftime('%d.%m')} "
+        f"{start_time} | {training_format} | {level}"[:40],
+        "primary",
+    )
 
 
 def show_schedule(user_id, category=None):
@@ -2357,16 +2341,16 @@ def admin_show_schedule(user_id):
         if training_format == "Технический":
             training_format = "Техничка"
 
-        level = row_value(
-            training,
-            "level",
-            "",
-        ) or ""
+        training_date = training_date_value(training)
+        count = get_training_participant_count(
+            row_value(training, "id")
+        )
+        capacity = training_capacity(training)
 
         label = (
-            f"№{training_number(training)} "
+            f"{WEEKDAYS_SHORT[training_date.weekday()]} "
             f"{row_value(training, 'start_time', '')} | "
-            f"{training_format} | {level}"
+            f"{training_format} | {count}/{capacity}"
         )
 
         buttons.append(
@@ -2386,7 +2370,7 @@ def admin_show_schedule(user_id):
             )
         ]
     )
-    buttons = compact_keyboard_buttons(buttons, max_rows=10)
+    buttons = compact_keyboard_buttons(buttons, max_rows=10, max_buttons_per_row=2)
 
     set_state(
         user_id,
@@ -2426,18 +2410,44 @@ def admin_show_training(
     )
 
     text += (
-        f"\n\n👥 Участников: "
-        f"{count}/"
-        f"{training_capacity(training)}"
+        f"\n\n👥 УЧАСТНИКИ "
+        f"({count}/{training_capacity(training)})"
     )
 
-    buttons = [
-        [
-            button(
-                "👥 Посмотреть участников",
-                "primary",
+    try:
+        registrations = list(
+            get_registrations(training_id) or []
+        )
+    except Exception:
+        registrations = []
+
+    if not registrations:
+        text += "\nПока никто не записан."
+    else:
+        for index, registration in enumerate(
+            registrations,
+            start=1,
+        ):
+            first_name = row_value(
+                registration,
+                "first_name",
+                "",
             )
-        ],
+            last_name = row_value(
+                registration,
+                "last_name",
+                "",
+            )
+            name = (
+                f"{first_name} {last_name}"
+            ).strip()
+
+            if not name:
+                name = "Участник"
+
+            text += f"\n{index}. {name}"
+
+    buttons = [
         [
             button(
                 "📋 Посещаемость",
@@ -3059,35 +3069,126 @@ def parse_short_date_button(text):
 
 
 def find_training_from_button(text):
-    """Find training by the number shown in a schedule button."""
+    """
+    Finds a training from a schedule button.
+
+    training_number remains in the database as an internal identifier,
+    but it is no longer shown in new UI buttons. Old №N buttons remain
+    supported for backward compatibility.
+    """
     import re
 
     text = str(text or "").strip()
-    match = re.search(r"№\s*(\d+)", text)
-    if not match:
-        logger.warning("TRAINING BUTTON NUMBER NOT FOUND: %r", text)
-        return None
-
-    number_text = match.group(1)
     connection = get_connection()
+
     try:
         cursor = connection.cursor()
+
+        # Old buttons.
+        number_match = re.search(r"№\s*(\d+)", text)
+        if number_match:
+            number_text = number_match.group(1)
+            cursor.execute(
+                "SELECT * FROM trainings "
+                "WHERE CAST(training_number AS INTEGER) = ? "
+                "ORDER BY id DESC LIMIT 1",
+                (int(number_text),),
+            )
+            return cursor.fetchone()
+
+        # New buttons: "Пн 05.10 17:00 | Миксты | Средний"
+        match = re.search(
+            r"(Пн|Вт|Ср|Чт|Пт|Сб|Вс)\s+"
+            r"(\d{1,2})\.(\d{1,2})\s+"
+            r"(\d{1,2}:\d{2})",
+            text,
+            re.IGNORECASE,
+        )
+
+        if not match:
+            logger.warning(
+                "TRAINING BUTTON DATE/TIME NOT FOUND: %r",
+                text,
+            )
+            return None
+
+        day = int(match.group(2))
+        month = int(match.group(3))
+        start_time = match.group(4)
+        year = today_local().year
+
+        selected_date = date(year, month, day)
+
         cursor.execute(
             "SELECT * FROM trainings "
-            "WHERE CAST(training_number AS INTEGER) = ? "
-            "ORDER BY id DESC LIMIT 1",
-            (int(number_text),),
+            "WHERE training_date = ? AND start_time = ? "
+            "ORDER BY id DESC",
+            (
+                selected_date.isoformat(),
+                start_time,
+            ),
         )
-        training = cursor.fetchone()
+        rows = cursor.fetchall()
+
+        # New year transition.
+        if not rows and month == 1 and today_local().month == 12:
+            selected_date = date(year + 1, month, day)
+            cursor.execute(
+                "SELECT * FROM trainings "
+                "WHERE training_date = ? AND start_time = ? "
+                "ORDER BY id DESC",
+                (
+                    selected_date.isoformat(),
+                    start_time,
+                ),
+            )
+            rows = cursor.fetchall()
+
+        # If several trainings have the same start time, use format/level.
+        if len(rows) > 1:
+            normalized = text.lower()
+
+            for row in rows:
+                training_format = str(
+                    row_value(row, "format", "") or ""
+                ).lower()
+
+                level = str(
+                    row_value(row, "level", "") or ""
+                ).lower()
+
+                if (
+                    training_format
+                    and training_format in normalized
+                    and level
+                    and level in normalized
+                ):
+                    logger.info(
+                        "TRAINING BUTTON LOOKUP resolved by "
+                        "date/time/format/level id=%s",
+                        row_value(row, "id"),
+                    )
+                    return row
+
+        training = rows[0] if rows else None
+
         logger.info(
-            "TRAINING BUTTON LOOKUP number=%s found=%s",
-            number_text,
+            "TRAINING BUTTON LOOKUP date=%s time=%s found=%s count=%s",
+            selected_date.isoformat(),
+            start_time,
             bool(training),
+            len(rows),
         )
+
         return training
+
     except Exception:
-        logger.exception("TRAINING BUTTON LOOKUP ERROR text=%r", text)
+        logger.exception(
+            "TRAINING BUTTON LOOKUP ERROR text=%r",
+            text,
+        )
         return None
+
     finally:
         connection.close()
 

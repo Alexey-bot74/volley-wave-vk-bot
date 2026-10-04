@@ -667,6 +667,30 @@ def show_schedule_categories(user_id):
     )
 
 
+def compact_keyboard_buttons(buttons, max_rows=10):
+    """Compact one-button rows into two-button rows for VK keyboard limits."""
+    compact = []
+    row = []
+
+    for item in buttons:
+        if not item:
+            continue
+        for btn in item:
+            row.append(btn)
+            if len(row) == 2:
+                compact.append(row)
+                row = []
+
+    if row:
+        compact.append(row)
+
+    if len(compact) <= max_rows:
+        return compact
+
+    # Safety fallback: keep the keyboard within VK's row limit.
+    return compact[:max_rows]
+
+
 def show_schedule(
     user_id,
     category=None,
@@ -742,6 +766,7 @@ def show_schedule(
         button("⬅️ Назад", "secondary"),
         button("🏠 Главное меню", "secondary"),
     ])
+    buttons = compact_keyboard_buttons(buttons, max_rows=10)
 
     set_state(user_id, "schedule_week", {"category": category})
     send_message(
@@ -2374,6 +2399,7 @@ def admin_show_schedule(user_id):
             )
         ]
     )
+    buttons = compact_keyboard_buttons(buttons, max_rows=10)
 
     set_state(
         user_id,
@@ -3174,6 +3200,7 @@ def admin_show_participants_list(
             )
         ]
     )
+    buttons = compact_keyboard_buttons(buttons, max_rows=10)
 
     set_state(
         user_id,
@@ -3856,6 +3883,13 @@ def handle_text(
                     .strip()
                 )
 
+                # Дата может прийти как "1.07.10" — это номер строки 1 + дата 07.10.
+                # Также поддерживаем обычные "07.10" и "07.10.2026".
+                if re.match(r"^\d\.\d{1,2}\.\d{1,4}$", date_text):
+                    prefix, rest = date_text.split(".", 1)
+                    if len(rest.split(".")) == 2:
+                        date_text = rest
+
                 # Поддерживаем и запись с номером строки без пробела:
                 # "1.07.10" -> "07.10".
                 numbered_short_date = re.match(
@@ -3957,6 +3991,12 @@ def handle_text(
                         "Не указано место"
                     )
 
+                logger.info(
+                    "ADMIN %s parsed training input: %r",
+                    user_id,
+                    lines,
+                )
+
                 data = {
                     "date": lines[0],
                     "start_time": start_time,
@@ -3978,9 +4018,10 @@ def handle_text(
                     user_id,
                     "❌ Не удалось разобрать тренировку.\n\n"
                     f"{error}\n\n"
-                    "Проверьте формат сообщения и попробуйте ещё раз.",
+                    "Отправьте эти 7 строк ещё раз. Режим добавления тренировки сохранён.",
                     admin_back_keyboard(),
                 )
+                set_state(user_id, "admin_add_training", {})
 
             return
 

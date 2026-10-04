@@ -2049,6 +2049,16 @@ def ensure_default_templates():
                 elif column == "is_active":
                     values[column] = 1
 
+                elif column == "created_at":
+                    values[column] = datetime.now().isoformat(
+                        timespec="seconds"
+                    )
+
+                elif column == "updated_at":
+                    values[column] = datetime.now().isoformat(
+                        timespec="seconds"
+                    )
+
             if not values:
                 continue
 

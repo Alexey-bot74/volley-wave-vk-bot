@@ -1750,24 +1750,30 @@ def admin_create_training(data):
 
 DEFAULT_TEMPLATES = [
     # ПОНЕДЕЛЬНИК
-    {"weekday": 0, "start_time": "09:00", "end_time": "11:00", "title": "Детская тренировка", "category": "Дети", "age_group": "9–14", "level": "Общий", "format": "Тренировка", "coach": "Ксения", "capacity": 10, "price": 600, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
-    {"weekday": 0, "start_time": "17:00", "end_time": "19:00", "title": "Детская тренировка", "category": "Дети", "age_group": "11–14", "level": "Общий", "format": "Тренировка", "coach": "Ксения", "capacity": 10, "price": 600, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
+    {"weekday": 0, "start_time": "09:00", "end_time": "11:00", "title": "Детская тренировка", "category": "Дети", "age_group": "9–13 лет", "level": "9–13 лет", "format": "Детская", "coach": "Ксения", "capacity": 10, "price": 600, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
+    {"weekday": 0, "start_time": "17:00", "end_time": "19:00", "title": "Детская тренировка", "category": "Дети", "age_group": "11–14 лет", "level": "11–14 лет", "format": "Детская", "coach": "Ксения", "capacity": 10, "price": 600, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
     {"weekday": 0, "start_time": "19:00", "end_time": "20:30", "title": "Техничка", "category": "Взрослые", "age_group": "18+", "level": "Общий", "format": "Техничка", "coach": "Ксения", "capacity": 10, "price": 1200, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
+
     # ВТОРНИК
     {"weekday": 1, "start_time": "09:00", "end_time": "11:00", "title": "Тренировка", "category": "Взрослые", "age_group": "18+", "level": "Общий", "format": "Тренировка", "coach": "Алексей", "capacity": 8, "price": 1200, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
-    {"weekday": 1, "start_time": "17:00", "end_time": "18:30", "title": "Детская тренировка", "category": "Дети", "age_group": "11–14", "level": "Общий", "format": "Тренировка", "coach": "Алексей", "capacity": 10, "price": 600, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
-    {"weekday": 1, "start_time": "19:30", "end_time": "21:00", "title": "Женская", "category": "Взрослые", "age_group": "18+", "level": "Средний", "format": "Женская", "coach": "Алексей", "capacity": 8, "price": 1200, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
+    {"weekday": 1, "start_time": "17:00", "end_time": "18:30", "title": "Детская тренировка", "category": "Дети", "age_group": "11–14 лет", "level": "11–14 лет", "format": "Детская", "coach": "Алексей", "capacity": 10, "price": 600, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
+    {"weekday": 1, "start_time": "19:30", "end_time": "21:00", "title": "Женская", "category": "Взрослые", "age_group": "18+", "level": "Средний и выше", "format": "Женская", "coach": "Алексей", "capacity": 8, "price": 1200, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
+
     # СРЕДА
-    {"weekday": 2, "start_time": "09:00", "end_time": "11:00", "title": "Детская тренировка", "category": "Дети", "age_group": "9–14", "level": "Общий", "format": "Тренировка", "coach": "Алексей", "capacity": 10, "price": 600, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
+    {"weekday": 2, "start_time": "09:00", "end_time": "11:00", "title": "Детская тренировка", "category": "Дети", "age_group": "9–14 лет", "level": "9–14 лет", "format": "Детская", "coach": "Алексей", "capacity": 10, "price": 600, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
+    {"weekday": 2, "start_time": "17:00", "end_time": "18:00", "title": "Детская тренировка", "category": "Дети", "age_group": "5–9 лет", "level": "5–9 лет", "format": "Детская", "coach": "Алексей", "capacity": 10, "price": 600, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
     {"weekday": 2, "start_time": "18:00", "end_time": "19:30", "title": "Мужская", "category": "Взрослые", "age_group": "18+", "level": "Продвинутый", "format": "Мужская", "coach": "Алексей", "capacity": 8, "price": 1200, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
-    {"weekday": 2, "start_time": "19:30", "end_time": "21:00", "title": "Миксты", "category": "Взрослые", "age_group": "18+", "level": "Средний", "format": "Миксты", "coach": "Алексей", "capacity": 6, "price": 1200, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
+    {"weekday": 2, "start_time": "19:30", "end_time": "21:00", "title": "Миксты", "category": "Взрослые", "age_group": "18+", "level": "Средний и выше", "format": "Миксты", "coach": "Алексей", "capacity": 6, "price": 1200, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
+
     # ЧЕТВЕРГ
     {"weekday": 3, "start_time": "09:00", "end_time": "11:00", "title": "Тренировка", "category": "Взрослые", "age_group": "18+", "level": "Общий", "format": "Тренировка", "coach": "Алексей", "capacity": 8, "price": 1200, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
-    {"weekday": 3, "start_time": "17:00", "end_time": "19:00", "title": "Детская тренировка", "category": "Дети", "age_group": "11–14", "level": "Общий", "format": "Тренировка", "coach": "Алексей", "capacity": 10, "price": 600, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
+    {"weekday": 3, "start_time": "17:00", "end_time": "19:00", "title": "Детская тренировка", "category": "Дети", "age_group": "11–14 лет", "level": "11–14 лет", "format": "Детская", "coach": "Алексей", "capacity": 10, "price": 600, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
     {"weekday": 3, "start_time": "19:00", "end_time": "20:30", "title": "Тренировка", "category": "Взрослые", "age_group": "18+", "level": "Средний", "format": "Тренировка", "coach": "Алексей", "capacity": 8, "price": 1200, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
+
     # ПЯТНИЦА
-    {"weekday": 4, "start_time": "09:00", "end_time": "11:00", "title": "Детская тренировка", "category": "Дети", "age_group": "9–14", "level": "Общий", "format": "Тренировка", "coach": "Алексей", "capacity": 10, "price": 600, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
-    {"weekday": 4, "start_time": "17:00", "end_time": "19:00", "title": "Детская тренировка", "category": "Дети", "age_group": "11–14", "level": "Общий", "format": "Тренировка", "coach": "Алексей", "capacity": 10, "price": 600, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
+    {"weekday": 4, "start_time": "09:00", "end_time": "11:00", "title": "Детская тренировка", "category": "Дети", "age_group": "9–14 лет", "level": "9–14 лет", "format": "Детская", "coach": "Алексей", "capacity": 10, "price": 600, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
+    {"weekday": 4, "start_time": "17:00", "end_time": "18:00", "title": "Детская тренировка", "category": "Дети", "age_group": "5–10 лет", "level": "5–10 лет", "format": "Детская", "coach": "Алексей", "capacity": 10, "price": 600, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
+    {"weekday": 4, "start_time": "17:00", "end_time": "19:00", "title": "Детская тренировка", "category": "Дети", "age_group": "11–14 лет", "level": "11–14 лет", "format": "Детская", "coach": "Алексей", "capacity": 10, "price": 600, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
     {"weekday": 4, "start_time": "19:00", "end_time": "20:30", "title": "Техничка", "category": "Взрослые", "age_group": "18+", "level": "Общий", "format": "Техничка", "coach": "Алексей", "capacity": 10, "price": 1200, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
 ]
 

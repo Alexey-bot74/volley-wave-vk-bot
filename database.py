@@ -1538,7 +1538,14 @@ def get_training_history(from_date=None, to_date=None, include_future=False):
             query += " AND training_date <= ?"
             params.append(to_date)
         if not include_future:
-            query += " AND (training_date < date('now', 'localtime') OR status IN ('completed', 'cancelled'))"
+            query += (
+                " AND ("
+                "training_date < date('now', 'localtime')"
+                " OR status IN ('completed', 'cancelled')"
+                " OR (training_date = date('now', 'localtime')"
+                " AND time(end_time) <= time('now', 'localtime'))"
+                ")"
+            )
         query += " ORDER BY training_date DESC, start_time DESC, id DESC"
         return conn.execute(query, params).fetchall()
     finally:

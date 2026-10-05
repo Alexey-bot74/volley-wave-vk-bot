@@ -3259,7 +3259,14 @@ def admin_archive_by_date(user_id, date_text):
         registrations = list(get_training_registrations_history(training_id) or [])
         count = len([r for r in registrations if row_value(r, "registration_status") == "registered"])
         status = row_value(training, "status", "")
-        status_text = {"cancelled": "❌ отменена", "completed": "✅ завершена", "scheduled": "🕐 запланирована"}.get(status, status)
+        if status == "scheduled" and training_has_passed(training):
+            status_text = "⚠️ требует отметки"
+        else:
+            status_text = {
+                "cancelled": "❌ отменена",
+                "completed": "✅ завершена",
+                "scheduled": "🕐 запланирована",
+            }.get(status, status)
         text += (
             f"⏰ {row_value(training, 'start_time', '')}–{row_value(training, 'end_time', '')} | "
             f"{row_value(training, 'format', '')}\n"
@@ -3286,7 +3293,26 @@ def admin_archive_by_date(user_id, date_text):
         else:
             text += "👤 Записанных нет.\n"
         text += "\n"
-    send_message(user_id, text.rstrip(), admin_back_keyboard())
+    archive_buttons = []
+    for training in trainings:
+        training_id = row_value(training, "id")
+        status = row_value(training, "status", "")
+        if status == "scheduled" and training_has_passed(training):
+            number = training_number(training)
+            archive_buttons.append([
+                button(f"✅ Прошла №{number}", "positive"),
+                button(f"❌ Не прошла №{number}", "negative"),
+            ])
+
+    if archive_buttons:
+        archive_buttons.append([button("⬅️ Админ-панель", "secondary")])
+        send_message(
+            user_id,
+            text.rstrip(),
+            {"one_time": False, "buttons": archive_buttons},
+        )
+    else:
+        send_message(user_id, text.rstrip(), admin_back_keyboard())
 
 
 def admin_archive_by_user(user_id, search_text):
@@ -4613,7 +4639,7 @@ def handle_text(
     if user_id in ADMINS:
 
         completion_match = re.match(
-            r"^(?:✅ Тренировка прошла|❌ Тренировка не прошла) №(\d+)$",
+            r"^(?:✅ (?:Тренировка прошла|Прошла)|❌ (?:Тренировка не прошла|Не прошла)) №(\d+)$",
             text,
         )
         if completion_match:

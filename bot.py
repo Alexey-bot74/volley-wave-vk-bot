@@ -149,11 +149,20 @@ def vk_api(method, params):
         result = response.json()
 
         if "error" in result:
-            logger.error(
-                "VK API error in %s: %s",
-                method,
-                result["error"],
-            )
+            error = result["error"]
+            error_code = error.get("error_code") if isinstance(error, dict) else None
+
+            if error_code == 901 and method == "messages.send":
+                logger.warning(
+                    "VK messages.send skipped: user %s has not granted message permission",
+                    params.get("user_id"),
+                )
+            else:
+                logger.error(
+                    "VK API error in %s: %s",
+                    method,
+                    error,
+                )
 
         return result
 

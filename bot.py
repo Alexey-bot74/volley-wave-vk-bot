@@ -695,7 +695,6 @@ def show_locations(user_id):
                         "link": "https://2gis.ru/chelyabinsk/geo/70000001025433237",
                         "label": "🗺 2ГИС",
                     },
-                    "color": "primary",
                 },
                 {
                     "action": {
@@ -703,7 +702,6 @@ def show_locations(user_id):
                         "link": "https://yandex.ru/navi/org/arena/8201821924?si=rtfatacyan07qb5rxz5jgad8jc",
                         "label": "🗺 Яндекс Карты",
                     },
-                    "color": "primary",
                 },
             ],
             [{"action": {"type": "text", "label": "⬅️ Назад"}, "color": "secondary"}],

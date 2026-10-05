@@ -3298,7 +3298,13 @@ def admin_archive_by_date(user_id, date_text):
     except Exception:
         logger.exception("Failed to repair default schedule before archive lookup")
 
-    trainings = list(get_training_history(parsed.isoformat(), parsed.isoformat(), include_future=False) or [])
+    # Для архива по конкретной дате берём все тренировки этой даты.
+    # Не используем include_future=False, потому что database.py сравнивает
+    # время через SQLite localtime (UTC на Render), а расписание школы
+    # работает по TIMEZONE (Екатеринбург, UTC+5). Из-за этого тренировка
+    # 17:00–19:00 могла ошибочно считаться ещё не прошедшей и исчезать
+    # из архива текущего дня.
+    trainings = list(get_training_history(parsed.isoformat(), parsed.isoformat(), include_future=True) or [])
     if not trainings:
         send_message(user_id, f"📚 На {format_date(parsed)} тренировок в архиве не найдено.", admin_back_keyboard())
         return

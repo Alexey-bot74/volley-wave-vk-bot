@@ -2045,6 +2045,36 @@ def create_training_directly(
         connection.close()
 
 
+def ensure_default_trainings_for_date(training_date):
+    """
+    Гарантирует наличие всех стандартных тренировок для конкретной даты.
+
+    Используется архивом в том числе для уже прошедших дат: если стандартный
+    слот отсутствует в базе, он создаётся заново, чтобы тренировку можно было
+    отметить как прошедшую или не состоявшуюся.
+    """
+    created = 0
+    for template in DEFAULT_TEMPLATES:
+        if training_date.weekday() != template["weekday"]:
+            continue
+        try:
+            if create_training_directly(template, training_date):
+                created += 1
+        except Exception:
+            logger.exception(
+                "Failed to ensure default training for %s at %s",
+                training_date,
+                template.get("start_time"),
+            )
+    if created:
+        logger.info(
+            "Restored %s default training(s) for archive date %s",
+            created,
+            training_date,
+        )
+    return created
+
+
 def generate_default_trainings(
     weeks=6,
 ):
@@ -3258,15 +3288,15 @@ def admin_archive_by_date(user_id, date_text):
         send_message(user_id, "❌ Дата должна быть в формате ДД.ММ.ГГГГ или ДД.ММ.", admin_back_keyboard())
         return
 
-    # Для сегодняшней даты дополнительно восстанавливаем отсутствующие
-    # стандартные слоты перед чтением архива. Это важно, если бот был
-    # перезапущен после изменения базового расписания.
-    if parsed >= today_local():
-        try:
-            generate_default_trainings(weeks=6)
+    # Перед чтением архива гарантируем, что стандартные тренировки
+    # именно этой даты существуют в базе. Это важно, если конкретный
+    # слот был удалён или не был создан во время предыдущего запуска.
+    try:
+        ensure_default_trainings_for_date(parsed)
+        if parsed >= today_local():
             sync_future_default_trainings()
-        except Exception:
-            logger.exception("Failed to repair default schedule before archive lookup")
+    except Exception:
+        logger.exception("Failed to repair default schedule before archive lookup")
 
     trainings = list(get_training_history(parsed.isoformat(), parsed.isoformat(), include_future=False) or [])
     if not trainings:
@@ -3319,9 +3349,15 @@ def admin_archive_by_date(user_id, date_text):
         status = row_value(training, "status", "")
         if status == "scheduled" and training_has_passed(training):
             number = training_number(training)
+            training_date = row_value(training, "training_date", "")
+            start_time = str(row_value(training, "start_time", ""))[:5]
+            try:
+                date_label = datetime.fromisoformat(str(training_date)).strftime("%d.%m")
+            except Exception:
+                date_label = str(training_date)
             archive_buttons.append([
-                button(f"✅ Прошла №{number}", "positive"),
-                button(f"❌ Не прошла №{number}", "negative"),
+                button(f"✅ Прошла {date_label} {start_time} №{number}", "positive"),
+                button(f"❌ Не прошла {date_label} {start_time} №{number}", "negative"),
             ])
 
     if archive_buttons:

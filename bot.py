@@ -37,7 +37,17 @@ from database import (
     admin_remove_registration,
     get_training_registered_vk_ids,
     get_training_history,
+    get_training_registrations_history,
     search_training_history_by_user,
+    get_training_by_number,
+    complete_training,
+    cancel_training_as_not_held,
+    mark_completion_check_sent,
+    get_training_feedback,
+    save_training_feedback,
+    get_training_feedback_summary,
+    update_training_comment,
+    get_trainings_needing_completion_check,
     cancel_training,
     create_notification,
     get_pending_notifications,
@@ -505,6 +515,22 @@ def training_date_value(training):
     ).date()
 
 
+def training_has_passed(training, now=None):
+    """True, если время окончания тренировки уже прошло."""
+    if now is None:
+        now = datetime.now(TIMEZONE)
+    training_date = training_date_value(training)
+    end_time = row_value(training, "end_time", "23:59") or "23:59"
+    try:
+        end_dt = datetime.combine(
+            training_date,
+            datetime.strptime(end_time, "%H:%M").time(),
+        ).replace(tzinfo=TIMEZONE)
+        return end_dt <= now
+    except Exception:
+        return False
+
+
 def training_capacity(training):
     value = row_value(
         training,
@@ -595,6 +621,7 @@ def format_training(
     coach = row_value(training, "coach", "")
     price = row_value(training, "price", 0)
     location = row_value(training, "location", "")
+    comment = row_value(training, "comment", "") or ""
 
     if training_format == "Технический":
         training_format = "Техничка"
@@ -608,6 +635,9 @@ def format_training(
         f"📍 Место: {location}\n"
         f"💰 Цена: {price}₽"
     )
+
+    if comment.strip():
+        text += f"\n📝 Комментарий: {comment.strip()}"
 
     if include_participants and training_id:
         count = get_training_participant_count(training_id)
@@ -693,14 +723,31 @@ def schedule_training_button(training):
     )
 
 
-def show_schedule(user_id, category=None):
+def week_start_for(value=None):
+    if value is None:
+        value = today_local()
+    if isinstance(value, str):
+        value = datetime.strptime(value, "%Y-%m-%d").date()
+    return value - timedelta(days=value.weekday())
+
+
+def show_schedule(user_id, category=None, week_start=None):
     today = today_local()
-    end_date = today + timedelta(days=6)
+    current_week = week_start_for(today)
+    if week_start is None:
+        week_start = current_week
+    elif isinstance(week_start, str):
+        week_start = datetime.strptime(week_start, "%Y-%m-%d").date()
+
+    if week_start < current_week:
+        week_start = current_week
+
+    end_date = week_start + timedelta(days=6)
     category_name = "Дети" if category == "children" else "Взрослые"
 
     try:
         trainings = get_upcoming_trainings(
-            from_date=today.isoformat(),
+            from_date=max(week_start, today).isoformat() if week_start == current_week else week_start.isoformat(),
             to_date=end_date.isoformat(),
             category=category_name,
         )
@@ -709,17 +756,18 @@ def show_schedule(user_id, category=None):
         send_message(user_id, "❌ Не удалось загрузить расписание.\n\nОшибка записана в лог Render.", back_keyboard(user_id))
         return
 
-    trainings = list(trainings or [])
-    if not trainings:
-        send_message(user_id, f"📅 РАСПИСАНИЕ — {category_name.upper()}\n\nНа ближайшую неделю тренировок нет.", back_keyboard(user_id))
-        return
-
+    trainings = [
+        training for training in list(trainings or [])
+        if not training_has_passed(training)
+    ]
     grouped = {}
     for training in trainings:
         grouped.setdefault(training_date_value(training), []).append(training)
 
     text = f"📅 РАСПИСАНИЕ — {category_name.upper()}\n\n"
+    text += f"📆 Неделя: {week_start.strftime('%d.%m')}–{end_date.strftime('%d.%m')}\n\n"
     buttons = []
+
     for current_date in sorted(grouped):
         text += f"📌 {format_date(current_date)}\n"
         row = []
@@ -739,18 +787,22 @@ def show_schedule(user_id, category=None):
             buttons.append(row)
         text += "\n"
 
-    buttons.append([
-        button("⬅️ Назад", "secondary"),
-        button("🏠 Главное меню", "secondary"),
-    ])
-    buttons = compact_keyboard_buttons(
-        buttons,
-        max_rows=10,
-        max_buttons_per_row=2,
-    )
+    if not trainings:
+        text += "На этой неделе подходящих тренировок нет.\n\n"
 
-    set_state(user_id, "schedule_week", {"category": category})
-    send_message(user_id, text.rstrip() + "\n\n📝 Нажмите кнопку тренировки, чтобы сразу увидеть участников и записаться.", {"one_time": False, "buttons": buttons})
+    navigation = []
+    if week_start > current_week:
+        navigation.append(button("⬅️ Предыдущая неделя", "secondary"))
+    if week_start < current_week + timedelta(days=28):
+        navigation.append(button("Следующая неделя ➡️", "secondary"))
+    if navigation:
+        buttons.append(navigation)
+
+    buttons.append([button("⬅️ Назад", "secondary"), button("🏠 Главное меню", "secondary")])
+    buttons = compact_keyboard_buttons(buttons, max_rows=10, max_buttons_per_row=2)
+
+    set_state(user_id, "schedule_week", {"category": category, "week_start": week_start.isoformat()})
+    send_message(user_id, text.rstrip() + "\n\n📝 Нажмите кнопку тренировки, чтобы увидеть участников и записаться.", {"one_time": False, "buttons": buttons})
 
 
 # ============================================================
@@ -789,6 +841,70 @@ def show_booking_categories(user_id):
             ],
         },
     )
+
+
+def show_booking_week(user_id, category, week_start=None):
+    today = today_local()
+    current_week = week_start_for(today)
+    if week_start is None:
+        week_start = current_week
+    elif isinstance(week_start, str):
+        week_start = datetime.strptime(week_start, "%Y-%m-%d").date()
+    if week_start < current_week:
+        week_start = current_week
+
+    end_date = week_start + timedelta(days=6)
+    category_names = {"children": "Дети", "adults": "Взрослые", "all": "Все"}
+    category_name = category_names.get(category, "Все")
+
+    try:
+        trainings = get_upcoming_trainings(
+            from_date=max(week_start, today).isoformat() if week_start == current_week else week_start.isoformat(),
+            to_date=end_date.isoformat(),
+            category=None if category == "all" else category_name,
+        )
+    except Exception:
+        logger.exception("Failed to load booking week")
+        send_message(user_id, "❌ Не удалось загрузить тренировки.", back_keyboard(user_id))
+        return
+
+    trainings = [
+        training for training in list(trainings or [])
+        if not training_has_passed(training)
+    ]
+    grouped = {}
+    for training in trainings:
+        grouped.setdefault(training_date_value(training), []).append(training)
+
+    text = f"🏐 ЗАПИСЬ — {category_name.upper()}\n\n📆 Неделя: {week_start.strftime('%d.%m')}–{end_date.strftime('%d.%m')}\n\n"
+    buttons = []
+    for current_date in sorted(grouped):
+        text += f"📌 {format_date(current_date)}\n"
+        row = []
+        for training in grouped[current_date]:
+            text += f"⏰ {row_value(training, 'start_time', '')}–{row_value(training, 'end_time', '')} | {row_value(training, 'format', '')} | {row_value(training, 'level', '')}\n"
+            row.append(button(training_selection_label(training), "primary"))
+            if len(row) == 2:
+                buttons.append(row)
+                row = []
+        if row:
+            buttons.append(row)
+        text += "\n"
+
+    if not trainings:
+        text += "На этой неделе подходящих тренировок нет.\n\n"
+
+    navigation = []
+    if week_start > current_week:
+        navigation.append(button("⬅️ Предыдущая неделя", "secondary"))
+    if week_start < current_week + timedelta(days=28):
+        navigation.append(button("Следующая неделя ➡️", "secondary"))
+    if navigation:
+        buttons.append(navigation)
+    buttons.append([button("⬅️ Назад", "secondary")])
+
+    set_state(user_id, "booking_week", {"category": category, "week_start": week_start.isoformat()})
+    send_message(user_id, text.rstrip() + "\n\nВыберите тренировку:", {"one_time": False, "buttons": compact_keyboard_buttons(buttons, max_rows=10, max_buttons_per_row=2)})
 
 
 def show_booking_dates(
@@ -1623,244 +1739,26 @@ def admin_create_training(data):
 # ============================================================
 
 DEFAULT_TEMPLATES = [
-    {
-        "weekday": 0,
-        "start_time": "09:00",
-        "end_time": "11:00",
-        "title": "Детская тренировка",
-        "category": "Дети",
-        "age_group": "9–13",
-        "level": "Начальный / средний",
-        "format": "Тренировка",
-        "coach": "Алексей",
-        "capacity": 10,
-        "price": 600,
-        "location": "СК «Арена», ул. Молодогвардейцев, 7",
-    },
-    {
-        "weekday": 0,
-        "start_time": "17:00",
-        "end_time": "19:00",
-        "title": "Детская тренировка",
-        "category": "Дети",
-        "age_group": "11–14",
-        "level": "Средний",
-        "format": "Тренировка",
-        "coach": "Алексей",
-        "capacity": 10,
-        "price": 600,
-        "location": "СК «Арена», ул. Молодогвардейцев, 7",
-    },
-    {
-        "weekday": 0,
-        "start_time": "19:00",
-        "end_time": "20:30",
-        "title": "Техническая тренировка",
-        "category": "Взрослые",
-        "age_group": "18+",
-        "level": "Продвинутый",
-        "format": "Тренировка",
-        "coach": "Алексей",
-        "capacity": 10,
-        "price": 1200,
-        "location": "СК «Арена», ул. Молодогвардейцев, 7",
-    },
-    {
-        "weekday": 1,
-        "start_time": "09:00",
-        "end_time": "11:00",
-        "title": "Общая тренировка",
-        "category": "Взрослые",
-        "age_group": "18+",
-        "level": "Общий",
-        "format": "Тренировка",
-        "coach": "Алексей",
-        "capacity": 8,
-        "price": 1200,
-        "location": "СК «Арена», ул. Молодогвардейцев, 7",
-    },
-    {
-        "weekday": 1,
-        "start_time": "17:00",
-        "end_time": "18:30",
-        "title": "Детская тренировка",
-        "category": "Дети",
-        "age_group": "11–14",
-        "level": "Средний",
-        "format": "Тренировка",
-        "coach": "Алексей",
-        "capacity": 10,
-        "price": 600,
-        "location": "СК «Арена», ул. Молодогвардейцев, 7",
-    },
-    {
-        "weekday": 1,
-        "start_time": "19:30",
-        "end_time": "21:00",
-        "title": "Женская тренировка",
-        "category": "Взрослые",
-        "age_group": "18+",
-        "level": "Средний+",
-        "format": "Женская группа",
-        "coach": "Алексей",
-        "capacity": 8,
-        "price": 1200,
-        "location": "СК «Арена», ул. Молодогвардейцев, 7",
-    },
-    {
-        "weekday": 2,
-        "start_time": "09:00",
-        "end_time": "11:00",
-        "title": "Детская тренировка",
-        "category": "Дети",
-        "age_group": "9–14",
-        "level": "Начальный / средний",
-        "format": "Тренировка",
-        "coach": "Алексей",
-        "capacity": 10,
-        "price": 600,
-        "location": "СК «Арена», ул. Молодогвардейцев, 7",
-    },
-    {
-        "weekday": 2,
-        "start_time": "17:00",
-        "end_time": "18:00",
-        "title": "Детская тренировка",
-        "category": "Дети",
-        "age_group": "5–9",
-        "level": "Начальный",
-        "format": "Тренировка",
-        "coach": "Ксения",
-        "capacity": 10,
-        "price": 600,
-        "location": "СК «Арена», ул. Молодогвардейцев, 7",
-    },
-    {
-        "weekday": 2,
-        "start_time": "18:00",
-        "end_time": "19:30",
-        "title": "Продвинутая тренировка",
-        "category": "Взрослые",
-        "age_group": "18+",
-        "level": "Продвинутый",
-        "format": "Тренировка",
-        "coach": "Алексей",
-        "capacity": 8,
-        "price": 1200,
-        "location": "СК «Арена», ул. Молодогвардейцев, 7",
-    },
-    {
-        "weekday": 2,
-        "start_time": "19:30",
-        "end_time": "21:00",
-        "title": "MIXED",
-        "category": "Взрослые",
-        "age_group": "18+",
-        "level": "Средний+",
-        "format": "MIXED",
-        "coach": "Алексей",
-        "capacity": 8,
-        "price": 1200,
-        "location": "СК «Арена», ул. Молодогвардейцев, 7",
-    },
-    {
-        "weekday": 3,
-        "start_time": "09:00",
-        "end_time": "11:00",
-        "title": "Общая тренировка",
-        "category": "Взрослые",
-        "age_group": "18+",
-        "level": "Общий",
-        "format": "Тренировка",
-        "coach": "Алексей",
-        "capacity": 8,
-        "price": 1200,
-        "location": "СК «Арена», ул. Молодогвардейцев, 7",
-    },
-    {
-        "weekday": 3,
-        "start_time": "17:00",
-        "end_time": "19:00",
-        "title": "Детская тренировка",
-        "category": "Дети",
-        "age_group": "11–14",
-        "level": "Средний",
-        "format": "Тренировка",
-        "coach": "Алексей",
-        "capacity": 10,
-        "price": 600,
-        "location": "СК «Арена», ул. Молодогвардейцев, 7",
-    },
-    {
-        "weekday": 3,
-        "start_time": "19:00",
-        "end_time": "20:30",
-        "title": "Тренировка для взрослых",
-        "category": "Взрослые",
-        "age_group": "18+",
-        "level": "Средний",
-        "format": "Тренировка",
-        "coach": "Алексей",
-        "capacity": 8,
-        "price": 1200,
-        "location": "СК «Арена», ул. Молодогвардейцев, 7",
-    },
-    {
-        "weekday": 4,
-        "start_time": "09:00",
-        "end_time": "11:00",
-        "title": "Детская тренировка",
-        "category": "Дети",
-        "age_group": "9–14",
-        "level": "Начальный / средний",
-        "format": "Тренировка",
-        "coach": "Алексей",
-        "capacity": 10,
-        "price": 600,
-        "location": "СК «Арена», ул. Молодогвардейцев, 7",
-    },
-    {
-        "weekday": 4,
-        "start_time": "17:00",
-        "end_time": "18:00",
-        "title": "Детская тренировка",
-        "category": "Дети",
-        "age_group": "5–10",
-        "level": "Начальный",
-        "format": "Тренировка",
-        "coach": "Ксения",
-        "capacity": 10,
-        "price": 600,
-        "location": "СК «Арена», ул. Молодогвардейцев, 7",
-    },
-    {
-        "weekday": 4,
-        "start_time": "17:00",
-        "end_time": "19:00",
-        "title": "Детская тренировка",
-        "category": "Дети",
-        "age_group": "11–14",
-        "level": "Средний",
-        "format": "Тренировка",
-        "coach": "Алексей",
-        "capacity": 10,
-        "price": 600,
-        "location": "СК «Арена», ул. Молодогвардейцев, 7",
-    },
-    {
-        "weekday": 4,
-        "start_time": "19:00",
-        "end_time": "20:30",
-        "title": "Техническая тренировка",
-        "category": "Взрослые",
-        "age_group": "18+",
-        "level": "Продвинутый",
-        "format": "Тренировка",
-        "coach": "Алексей",
-        "capacity": 10,
-        "price": 1200,
-        "location": "СК «Арена», ул. Молодогвардейцев, 7",
-    },
+    # ПОНЕДЕЛЬНИК
+    {"weekday": 0, "start_time": "09:00", "end_time": "11:00", "title": "Детская тренировка", "category": "Дети", "age_group": "9–14", "level": "Общий", "format": "Тренировка", "coach": "Ксения", "capacity": 10, "price": 600, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
+    {"weekday": 0, "start_time": "17:00", "end_time": "19:00", "title": "Детская тренировка", "category": "Дети", "age_group": "11–14", "level": "Общий", "format": "Тренировка", "coach": "Ксения", "capacity": 10, "price": 600, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
+    {"weekday": 0, "start_time": "19:00", "end_time": "20:30", "title": "Техничка", "category": "Взрослые", "age_group": "18+", "level": "Общий", "format": "Техничка", "coach": "Ксения", "capacity": 10, "price": 1200, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
+    # ВТОРНИК
+    {"weekday": 1, "start_time": "09:00", "end_time": "11:00", "title": "Тренировка", "category": "Взрослые", "age_group": "18+", "level": "Общий", "format": "Тренировка", "coach": "Алексей", "capacity": 8, "price": 1200, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
+    {"weekday": 1, "start_time": "17:00", "end_time": "18:30", "title": "Детская тренировка", "category": "Дети", "age_group": "11–14", "level": "Общий", "format": "Тренировка", "coach": "Алексей", "capacity": 10, "price": 600, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
+    {"weekday": 1, "start_time": "19:30", "end_time": "21:00", "title": "Женская", "category": "Взрослые", "age_group": "18+", "level": "Средний", "format": "Женская", "coach": "Алексей", "capacity": 8, "price": 1200, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
+    # СРЕДА
+    {"weekday": 2, "start_time": "09:00", "end_time": "11:00", "title": "Детская тренировка", "category": "Дети", "age_group": "9–14", "level": "Общий", "format": "Тренировка", "coach": "Алексей", "capacity": 10, "price": 600, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
+    {"weekday": 2, "start_time": "18:00", "end_time": "19:30", "title": "Мужская", "category": "Взрослые", "age_group": "18+", "level": "Продвинутый", "format": "Мужская", "coach": "Алексей", "capacity": 8, "price": 1200, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
+    {"weekday": 2, "start_time": "19:30", "end_time": "21:00", "title": "Миксты", "category": "Взрослые", "age_group": "18+", "level": "Средний", "format": "Миксты", "coach": "Алексей", "capacity": 6, "price": 1200, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
+    # ЧЕТВЕРГ
+    {"weekday": 3, "start_time": "09:00", "end_time": "11:00", "title": "Тренировка", "category": "Взрослые", "age_group": "18+", "level": "Общий", "format": "Тренировка", "coach": "Алексей", "capacity": 8, "price": 1200, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
+    {"weekday": 3, "start_time": "17:00", "end_time": "19:00", "title": "Детская тренировка", "category": "Дети", "age_group": "11–14", "level": "Общий", "format": "Тренировка", "coach": "Алексей", "capacity": 10, "price": 600, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
+    {"weekday": 3, "start_time": "19:00", "end_time": "20:30", "title": "Тренировка", "category": "Взрослые", "age_group": "18+", "level": "Средний", "format": "Тренировка", "coach": "Алексей", "capacity": 8, "price": 1200, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
+    # ПЯТНИЦА
+    {"weekday": 4, "start_time": "09:00", "end_time": "11:00", "title": "Детская тренировка", "category": "Дети", "age_group": "9–14", "level": "Общий", "format": "Тренировка", "coach": "Алексей", "capacity": 10, "price": 600, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
+    {"weekday": 4, "start_time": "17:00", "end_time": "19:00", "title": "Детская тренировка", "category": "Дети", "age_group": "11–14", "level": "Общий", "format": "Тренировка", "coach": "Алексей", "capacity": 10, "price": 600, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
+    {"weekday": 4, "start_time": "19:00", "end_time": "20:30", "title": "Техничка", "category": "Взрослые", "age_group": "18+", "level": "Общий", "format": "Техничка", "coach": "Алексей", "capacity": 10, "price": 1200, "location": "СК «Арена», ул. Молодогвардейцев, 7"},
 ]
 
 
@@ -1932,10 +1830,10 @@ def ensure_default_templates():
 
         if count > 0:
             logger.info(
-                "Training templates already exist: %s",
+                "Replacing default training templates: %s existing rows",
                 count,
             )
-            return
+            cursor.execute("DELETE FROM training_templates")
 
         logger.info(
             "Creating default training templates..."
@@ -2229,6 +2127,53 @@ def normalize_training_statuses():
         connection.close()
 
 
+LEGACY_DEFAULT_SLOT_KEYS = {
+    (0, "09:00", "11:00"), (0, "17:00", "19:00"), (0, "19:00", "20:30"),
+    (1, "09:00", "11:00"), (1, "17:00", "18:30"), (1, "19:30", "21:00"),
+    (2, "09:00", "11:00"), (2, "17:00", "18:00"), (2, "18:00", "19:30"), (2, "19:30", "21:00"),
+    (3, "09:00", "11:00"), (3, "17:00", "18:00"), (3, "17:00", "19:00"), (3, "19:00", "20:30"),
+    (4, "09:00", "11:00"), (4, "17:00", "18:00"), (4, "17:00", "19:00"), (4, "19:00", "20:30"),
+}
+
+def sync_future_default_trainings():
+    """Обновляет будущие тренировки под новое базовое расписание, не трогая уже записанных клиентов."""
+    today = today_local()
+    end_date = today + timedelta(days=42)
+    expected = {
+        (t["weekday"], t["start_time"], t["end_time"]): t
+        for t in DEFAULT_TEMPLATES
+    }
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM trainings WHERE training_date >= ? AND training_date <= ? AND status = 'scheduled'",
+            (today.isoformat(), end_date.isoformat()),
+        ).fetchall()
+        for row in rows:
+            key = (row["weekday"], row["start_time"], row["end_time"])
+            if key not in LEGACY_DEFAULT_SLOT_KEYS:
+                continue
+            template = expected.get(key)
+            registered = conn.execute(
+                "SELECT COUNT(*) AS c FROM registrations WHERE training_id = ? AND status = 'registered'",
+                (row["id"],),
+            ).fetchone()["c"]
+            if template:
+                conn.execute(
+                    """UPDATE trainings SET title=?, category=?, age_group=?, level=?, format=?, coach=?, capacity=?, price=?, location=?, updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+                    (template["title"], template["category"], template["age_group"], template["level"], template["format"], template["coach"], template["capacity"], template["price"], template["location"], row["id"]),
+                )
+            elif registered == 0:
+                conn.execute("DELETE FROM trainings WHERE id = ?", (row["id"],))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        logger.exception("Failed to sync future default trainings")
+        raise
+    finally:
+        conn.close()
+
+
 def ensure_schedule():
     """
     Главная функция восстановления расписания.
@@ -2257,6 +2202,11 @@ def ensure_schedule():
         logger.exception(
             "Template initialization failed"
         )
+
+    try:
+        sync_future_default_trainings()
+    except Exception:
+        logger.exception("Future default schedule sync failed")
 
     try:
         created = generate_default_trainings(
@@ -2337,9 +2287,10 @@ def admin_show_schedule(user_id):
         )
         return
 
-    trainings = list(
-        trainings or []
-    )
+    trainings = [
+        training for training in list(trainings or [])
+        if not training_has_passed(training)
+    ]
 
     if not trainings:
         send_message(
@@ -2501,6 +2452,10 @@ def admin_show_training(
         training
     )
 
+    training_comment = row_value(training, "comment", "") or ""
+    if training_comment.strip():
+        text += f"\n\n📝 Комментарий администратора:\n{training_comment.strip()}"
+
     text += (
         f"\n\n👥 УЧАСТНИКИ "
         f"({count}/{training_capacity(training)})"
@@ -2552,6 +2507,12 @@ def admin_show_training(
         ],
         [
             button(
+                "📝 Комментарий",
+                "secondary",
+            ),
+        ],
+        [
+            button(
                 "➕ Добавить участника",
                 "positive",
             ),
@@ -2568,6 +2529,12 @@ def admin_show_training(
             button(
                 "📋 Посещаемость",
                 "secondary",
+            ),
+        ],
+        [
+            button(
+                "✅ Тренировка прошла",
+                "positive",
             ),
         ],
         [
@@ -2811,6 +2778,76 @@ def admin_show_participants(
 # ADMIN ATTENDANCE
 # ============================================================
 
+def admin_finish_training(user_id, training_id):
+    if user_id not in ADMINS:
+        return
+
+    training = admin_db_training(training_id)
+    if not training:
+        send_message(user_id, "❌ Тренировка не найдена.", admin_back_keyboard())
+        return
+
+    if row_value(training, "status", "") == "completed":
+        admin_show_attendance(user_id, training_id)
+        return
+
+    if row_value(training, "status", "") == "cancelled":
+        send_message(user_id, "❌ Эта тренировка уже отменена.", admin_back_keyboard())
+        return
+
+    if complete_training(training_id, user_id):
+        add_admin_log(
+            user_id,
+            "training_completed",
+            "training",
+            training_id,
+            "Training marked as completed; registered participants marked present",
+        )
+        send_training_feedback_requests(training_id)
+        admin_show_attendance(user_id, training_id)
+    else:
+        send_message(user_id, "❌ Не удалось отметить тренировку.", admin_back_keyboard())
+
+
+def admin_mark_training_not_held(user_id, training_id):
+    if user_id not in ADMINS:
+        return
+
+    training = admin_db_training(training_id)
+    if not training:
+        send_message(user_id, "❌ Тренировка не найдена.", admin_back_keyboard())
+        return
+
+    if cancel_training_as_not_held(training_id):
+        add_admin_log(
+            user_id,
+            "training_not_held",
+            "training",
+            training_id,
+            "Training marked as not held",
+        )
+        send_message(
+            user_id,
+            "❌ Тренировка отмечена как не состоявшаяся.\n\nПосещаемость не выставлена.",
+            admin_back_keyboard(),
+        )
+    else:
+        send_message(user_id, "❌ Не удалось изменить статус тренировки.", admin_back_keyboard())
+
+
+def admin_mark_attendance_from_button(user_id, training_id, registration_id, status):
+    if user_id not in ADMINS:
+        return
+
+    training = admin_db_training(training_id)
+    if not training:
+        send_message(user_id, "❌ Тренировка не найдена.", admin_back_keyboard())
+        return
+
+    mark_attendance(registration_id, status, marked_by=user_id)
+    admin_show_attendance(user_id, training_id)
+
+
 def admin_show_attendance(
     user_id,
     training_id,
@@ -2853,6 +2890,8 @@ def admin_show_attendance(
     attendance = list(
         attendance or []
     )
+
+    feedback_summary = get_training_feedback_summary(training_id)
 
     attendance_map = {}
 
@@ -2929,12 +2968,36 @@ def admin_show_attendance(
                 f"{index}. {mark} {name}\n"
             )
 
-    send_message(
+    buttons = []
+    for index, registration in enumerate(registrations, start=1):
+        first_name = row_value(registration, "first_name", "")
+        last_name = row_value(registration, "last_name", "")
+        name = (f"{first_name} {last_name}").strip() or "Участник"
+        short_name = name[:28]
+        registration_id = row_value(registration, "id")
+        status = attendance_map.get(registration_id, "not_marked")
+
+        if status == "present":
+            label = f"❌ {index}. {short_name}"
+        else:
+            label = f"✅ {index}. {short_name}"
+
+        buttons.append([button(label, "secondary")])
+
+    buttons.append([button("⬅️ К тренировке", "secondary")])
+    buttons.append([button("⚙️ Админ-панель", "secondary")])
+
+    set_state(
         user_id,
-        text,
-        admin_back_keyboard(),
+        "admin_attendance",
+        {"training_id": training_id},
     )
 
+    send_message(
+        user_id,
+        text + "\n\nНажмите на участника, чтобы переключить отметку.",
+        {"one_time": False, "buttons": buttons},
+    )
 
 
 def admin_start_add_participant(user_id, training_id):
@@ -3005,42 +3068,34 @@ def admin_start_remove_participant(user_id, training_id):
 
 def admin_search_participants(user_id, training_id, search_text, mode="add"):
     users = list(search_users(search_text, limit=20) or [])
-    registered_ids = {
-        row_value(x, "vk_id") for x in (get_registrations(training_id) or [])
-    }
+    registered_ids = {row_value(x, "vk_id") for x in (get_registrations(training_id) or [])}
 
     buttons = []
+    mapping = {}
+    number = 1
     for user in users:
         vk_id = row_value(user, "vk_id")
         first_name = row_value(user, "first_name", "") or ""
         last_name = row_value(user, "last_name", "") or ""
         name = f"{first_name} {last_name}".strip() or "Без имени"
-
         if mode == "add" and vk_id in registered_ids:
             continue
         if mode == "add":
-            label = f"➕ {name} | {vk_id}"
-            buttons.append([button(label[:40], "positive")])
+            label = f"➕ {name}"[:40]
+            buttons.append([button(label, "positive")])
+            mapping[label] = vk_id
+            number += 1
 
     buttons.append([button("⬅️ К тренировке", "secondary")])
     buttons = compact_keyboard_buttons(buttons, max_rows=10, max_buttons_per_row=1)
 
     if mode == "add":
-        if not users or len(buttons) == 1:
-            send_message(
-                user_id,
-                "❌ Пользователь не найден.\n\n"
-                "Попробуйте другое написание имени или VK ID.",
-                admin_back_keyboard(),
-            )
+        if not users or len(mapping) == 0:
+            send_message(user_id, "❌ Пользователь не найден.\n\nПопробуйте другое написание имени или фамилии.", admin_back_keyboard())
             set_state(user_id, "admin_add_participant_search", {"training_id": training_id})
             return
-        set_state(user_id, "admin_add_participant_select", {"training_id": training_id})
-        send_message(
-            user_id,
-            "👤 Найдены пользователи. Выберите нужного:",
-            {"one_time": False, "buttons": buttons},
-        )
+        set_state(user_id, "admin_add_participant_select", {"training_id": training_id, "user_mapping": mapping})
+        send_message(user_id, "👤 Найдены пользователи. Выберите нужного:", {"one_time": False, "buttons": buttons})
 
 
 def admin_add_participant(user_id, training_id, vk_id):
@@ -3200,14 +3255,37 @@ def admin_archive_by_date(user_id, date_text):
 
     text = f"📚 АРХИВ — {format_date(parsed)}\n\n"
     for training in trainings:
-        count = get_training_participant_count(row_value(training, "id"))
+        training_id = row_value(training, "id")
+        registrations = list(get_training_registrations_history(training_id) or [])
+        count = len([r for r in registrations if row_value(r, "registration_status") == "registered"])
         status = row_value(training, "status", "")
         status_text = {"cancelled": "❌ отменена", "completed": "✅ завершена", "scheduled": "🕐 запланирована"}.get(status, status)
         text += (
             f"⏰ {row_value(training, 'start_time', '')}–{row_value(training, 'end_time', '')} | "
             f"{row_value(training, 'format', '')}\n"
-            f"📊 {row_value(training, 'level', '')} | 👥 {count}/{training_capacity(training)} | {status_text}\n\n"
+            f"📊 {row_value(training, 'level', '')} | 👥 {count}/{training_capacity(training)} | {status_text}\n"
         )
+        if registrations:
+            text += "👤 Записанные: "
+            names = []
+            for registration in registrations:
+                first_name = row_value(registration, "first_name", "") or ""
+                last_name = row_value(registration, "last_name", "") or ""
+                name = f"{first_name} {last_name}".strip() or f"VK {row_value(registration, 'vk_id', '')}"
+                reg_status = row_value(registration, "registration_status", "")
+                attendance = row_value(registration, "attendance_status", "")
+                suffix = ""
+                if reg_status != "registered":
+                    suffix = " — отменил запись"
+                elif attendance == "present":
+                    suffix = " — был"
+                elif attendance == "absent":
+                    suffix = " — не был"
+                names.append(f"{name}{suffix}")
+            text += "\n".join(f"• {name}" for name in names) + "\n"
+        else:
+            text += "👤 Записанных нет.\n"
+        text += "\n"
     send_message(user_id, text.rstrip(), admin_back_keyboard())
 
 
@@ -3334,8 +3412,11 @@ def admin_save_edited_training(user_id, training_id, data):
             "мужская": "Мужская",
             "мужская тренировка": "Мужская",
             "тренировка": "Тренировка",
+            "игровая": "Игровая",
+            "турнир": "Турнир",
         }
         level_aliases = {
+            "общий": "Общий",
             "начальный": "Начальный",
             "средний": "Средний",
             "продвинутый": "Продвинутый",
@@ -4031,6 +4112,36 @@ def handle_text(
         {},
     )
 
+    if state == "training_feedback_rating":
+        training_id = state_data.get("training_id")
+        rating_match = re.search(r"([1-5])", text)
+        if not rating_match:
+            send_message(user_id, "Пожалуйста, выберите оценку от 1 до 5.")
+            return
+        rating = int(rating_match.group(1))
+        set_state(user_id, "training_feedback_comment", {"training_id": training_id, "rating": rating})
+        send_message(
+            user_id,
+            "Спасибо! 🙌\n\n"
+            "Если хотите, напишите комментарий о тренировке в свободной форме.\n"
+            "Или нажмите «Пропустить».",
+            {"one_time": False, "buttons": [[button("Пропустить", "secondary")]]},
+        )
+        return
+
+    if state == "training_feedback_comment":
+        training_id = state_data.get("training_id")
+        rating = int(state_data.get("rating", 0))
+        comment = "" if text == "Пропустить" else text
+        try:
+            save_training_feedback(training_id, user_id, rating, comment)
+            clear_state(user_id)
+            send_message(user_id, "✅ Спасибо за обратную связь! Она сохранена.", main_menu(user_id))
+        except Exception:
+            logger.exception("Failed to save training feedback")
+            send_message(user_id, "❌ Не удалось сохранить отзыв. Попробуйте ещё раз.")
+        return
+
     # --------------------------------------------------------
     # ADMIN MODE
     # --------------------------------------------------------
@@ -4203,30 +4314,66 @@ def handle_text(
         return
 
     # --------------------------------------------------------
+    # SCHEDULE WEEK NAVIGATION
+    # --------------------------------------------------------
+
+    if state == "schedule_week":
+        category = state_data.get("category")
+        current = week_start_for(state_data.get("week_start"))
+        today_week = week_start_for(today_local())
+
+        if text == "⬅️ Предыдущая неделя":
+            target = max(today_week, current - timedelta(days=7))
+            show_schedule(user_id, category, target)
+            return
+
+        if text == "Следующая неделя ➡️":
+            target = current + timedelta(days=7)
+            if target <= today_week + timedelta(days=28):
+                show_schedule(user_id, category, target)
+            return
+
+    # --------------------------------------------------------
+    # BOOKING WEEK NAVIGATION
+    # --------------------------------------------------------
+
+    if state == "booking_week":
+        category = state_data.get("category")
+        current = week_start_for(state_data.get("week_start"))
+        today_week = week_start_for(today_local())
+
+        if text == "⬅️ Предыдущая неделя":
+            target = max(today_week, current - timedelta(days=7))
+            show_booking_week(user_id, category, target)
+            return
+
+        if text == "Следующая неделя ➡️":
+            target = current + timedelta(days=7)
+            if target <= today_week + timedelta(days=28):
+                show_booking_week(user_id, category, target)
+            return
+
+        training = find_training_from_button(text)
+        if training:
+            show_training_for_booking(user_id, training)
+            return
+
+    # --------------------------------------------------------
     # BOOKING CATEGORY
     # --------------------------------------------------------
 
     if state == "booking_category":
 
         if text == "👧 Дети":
-            show_booking_dates(
-                user_id,
-                "children",
-            )
+            show_booking_week(user_id, "children")
             return
 
         if text == "🧑 Взрослые":
-            show_booking_dates(
-                user_id,
-                "adults",
-            )
+            show_booking_week(user_id, "adults")
             return
 
         if text == "🏠 Все тренировки":
-            show_booking_dates(
-                user_id,
-                "all",
-            )
+            show_booking_week(user_id, "all")
             return
 
     # --------------------------------------------------------
@@ -4465,6 +4612,50 @@ def handle_text(
 
     if user_id in ADMINS:
 
+        completion_match = re.match(
+            r"^(?:✅ Тренировка прошла|❌ Тренировка не прошла) №(\d+)$",
+            text,
+        )
+        if completion_match:
+            training = get_training_by_number(int(completion_match.group(1)))
+            if not training:
+                send_message(user_id, "❌ Тренировка не найдена.", admin_back_keyboard())
+                return
+            if text.startswith("✅"):
+                admin_finish_training(user_id, row_value(training, "id"))
+            else:
+                admin_mark_training_not_held(user_id, row_value(training, "id"))
+            return
+
+        if state == "admin_attendance":
+            training_id = state_data.get("training_id")
+            if text == "⬅️ К тренировке":
+                training = admin_db_training(training_id)
+                if training:
+                    admin_show_training(user_id, training)
+                return
+            if text == "⚙️ Админ-панель":
+                admin_panel(user_id)
+                return
+
+            match = re.match(r"^(?:❌|✅)\s+(\d+)\.", text)
+            if match:
+                index = int(match.group(1))
+                registrations = list(get_registrations(training_id) or [])
+                if 1 <= index <= len(registrations):
+                    registration = registrations[index - 1]
+                    registration_id = row_value(registration, "id")
+                    current = None
+                    for item in (get_training_attendance(training_id) or []):
+                        if row_value(item, "registration_id") == registration_id:
+                            current = row_value(item, "status")
+                            break
+                    new_status = "absent" if current == "present" else "present"
+                    admin_mark_attendance_from_button(
+                        user_id, training_id, registration_id, new_status
+                    )
+                return
+
         if state == "admin_archive_menu":
             if text == "📅 По дате":
                 set_state(user_id, "admin_archive_date", {})
@@ -4489,11 +4680,12 @@ def handle_text(
 
         if state == "admin_add_participant_select":
             training_id = state_data.get("training_id")
-            match = re.search(r"\|\s*(\d+)\s*$", text)
-            if not match:
+            mapping = state_data.get("user_mapping", {})
+            vk_id = mapping.get(text)
+            if vk_id is None:
                 send_message(user_id, "❌ Не удалось определить пользователя. Выберите кнопку ещё раз.", admin_back_keyboard())
                 return
-            admin_add_participant(user_id, training_id, int(match.group(1)))
+            admin_add_participant(user_id, training_id, int(vk_id))
             return
 
         if state == "admin_remove_participant":
@@ -4532,11 +4724,29 @@ def handle_text(
                 admin_start_cancel_training(user_id, training_id)
                 return
 
+            if text == "📝 Комментарий":
+                training = admin_db_training(training_id)
+                current_comment = row_value(training, "comment", "") if training else ""
+                set_state(user_id, "admin_training_comment", {"training_id": training_id})
+                send_message(
+                    user_id,
+                    "📝 КОММЕНТАРИЙ К ТРЕНИРОВКЕ\n\n"
+                    "Отправьте текст комментария одним сообщением.\n"
+                    "Если хотите удалить комментарий — отправьте: УДАЛИТЬ\n\n"
+                    f"Текущий комментарий:\n{current_comment or 'нет'}",
+                    admin_back_keyboard(),
+                )
+                return
+
             if text == "📋 Посещаемость":
                 admin_show_attendance(
                     user_id,
                     training_id,
                 )
+                return
+
+            if text == "✅ Тренировка прошла":
+                admin_finish_training(user_id, training_id)
                 return
 
         if state == "admin_participants":
@@ -4602,6 +4812,18 @@ def handle_text(
                         admin_back_keyboard(),
                     )
                 return
+
+        if state == "admin_training_comment":
+            training_id = state_data.get("training_id")
+            comment = "" if text.upper() == "УДАЛИТЬ" else text
+            if update_training_comment(training_id, comment):
+                add_admin_log(user_id, "training_comment_update", "training", training_id, comment[:500])
+                training = admin_db_training(training_id)
+                if training:
+                    admin_show_training(user_id, training)
+                return
+            send_message(user_id, "❌ Не удалось сохранить комментарий.", admin_back_keyboard())
+            return
 
         if state == "admin_edit_training":
             lines = [line.strip() for line in text.splitlines() if line.strip()]
@@ -4733,9 +4955,12 @@ def handle_text(
                 "мужская тренировка": "Мужская",
                 "мужская группа": "Мужская",
                 "тренировка": "Тренировка",
+                "игровая": "Игровая",
+                "турнир": "Турнир",
             }
 
             level_aliases = {
+                "общий": "Общий",
                 "начальный": "Начальный",
                 "средний": "Средний",
                 "продвинутый": "Продвинутый",
@@ -5070,6 +5295,88 @@ def prepare_training_notifications(now):
                     logger.exception("Failed to create notification for %s", vk_id)
 
 
+def send_training_feedback_requests(training_id):
+    training = admin_db_training(training_id)
+    if not training:
+        return
+    recipients = get_training_registered_vk_ids(training_id)
+    for vk_id in recipients:
+        try:
+            existing = get_training_feedback(training_id, vk_id)
+            if existing:
+                continue
+            buttons = [
+                [button("⭐ 1", "negative"), button("⭐ 2", "negative"), button("⭐ 3", "secondary")],
+                [button("⭐ 4", "positive"), button("⭐ 5", "positive")],
+            ]
+            set_state(vk_id, "training_feedback_rating", {"training_id": training_id})
+            send_message(
+                vk_id,
+                "💬 ОЦЕНКА ТРЕНИРОВКИ\n\n"
+                "Как вам сегодняшняя тренировка?\n"
+                "Поставьте оценку от 1 до 5.",
+                {"one_time": False, "buttons": buttons},
+            )
+        except Exception:
+            logger.exception("Failed to request feedback from %s", vk_id)
+
+
+def completion_check_text(training):
+    return (
+        "🏐 ПРОВЕРКА ТРЕНИРОВКИ\n\n"
+        "Тренировка уже должна была закончиться. Прошла ли она?\n\n"
+        + format_training(training)
+        + "\n\nВыберите вариант:"
+    )
+
+
+def process_completion_checks():
+    now = datetime.now(TIMEZONE)
+    try:
+        trainings = get_trainings_needing_completion_check(
+            now.isoformat(),
+            delay_minutes=10,
+        )
+    except Exception:
+        logger.exception("Failed to get trainings needing completion check")
+        return
+
+    for training in trainings:
+        training_id = row_value(training, "id")
+        number = training_number(training)
+        buttons = [
+            [
+                button(f"✅ Тренировка прошла №{number}", "positive"),
+                button(f"❌ Тренировка не прошла №{number}", "negative"),
+            ]
+        ]
+
+        sent_any = False
+        for admin_id in ADMINS:
+            try:
+                result = send_message(
+                    admin_id,
+                    completion_check_text(training),
+                    {"one_time": False, "buttons": buttons},
+                )
+                if not result or not result.get("error"):
+                    sent_any = True
+            except Exception:
+                logger.exception(
+                    "Failed to send completion check for training %s to admin %s",
+                    training_id, admin_id,
+                )
+
+        if sent_any:
+            try:
+                mark_completion_check_sent(training_id)
+            except Exception:
+                logger.exception(
+                    "Failed to mark completion check sent for training %s",
+                    training_id,
+                )
+
+
 def process_pending_notifications():
     now = datetime.now(TIMEZONE)
     prepare_training_notifications(now)
@@ -5114,6 +5421,7 @@ def notification_worker():
     logger.info("Notification worker started")
     while True:
         try:
+            process_completion_checks()
             process_pending_notifications()
         except Exception:
             logger.exception("Notification worker iteration failed")

@@ -53,6 +53,7 @@ from database import (
     get_pending_notifications,
     mark_notification_sent,
     mark_notification_failed,
+    create_admin_notification_marker,
 )
 
 
@@ -3248,6 +3249,16 @@ def admin_archive_by_date(user_id, date_text):
         send_message(user_id, "❌ Дата должна быть в формате ДД.ММ.ГГГГ или ДД.ММ.", admin_back_keyboard())
         return
 
+    # Для сегодняшней даты дополнительно восстанавливаем отсутствующие
+    # стандартные слоты перед чтением архива. Это важно, если бот был
+    # перезапущен после изменения базового расписания.
+    if parsed >= today_local():
+        try:
+            generate_default_trainings(weeks=6)
+            sync_future_default_trainings()
+        except Exception:
+            logger.exception("Failed to repair default schedule before archive lookup")
+
     trainings = list(get_training_history(parsed.isoformat(), parsed.isoformat(), include_future=False) or [])
     if not trainings:
         send_message(user_id, f"📚 На {format_date(parsed)} тренировок в архиве не найдено.", admin_back_keyboard())
@@ -5356,6 +5367,67 @@ def completion_check_text(training):
     )
 
 
+def prepare_admin_minimum_set_notifications(now):
+    """Уведомляет админов за сутки до тренировки, набран ли минимум из 4 участников."""
+    minimum = 4
+    today = now.date()
+    end_date = today + timedelta(days=2)
+    trainings = admin_db_trainings(today.isoformat(), end_date.isoformat())
+
+    for training in trainings:
+        if row_value(training, "status", "") != "scheduled":
+            continue
+        try:
+            start_dt = training_start_datetime(training)
+        except Exception:
+            logger.exception("Invalid training datetime for minimum set notification")
+            continue
+
+        if start_dt <= now:
+            continue
+        if start_dt - timedelta(hours=24) > now:
+            continue
+
+        training_id = row_value(training, "id")
+        count = get_registration_count(training_id)
+        capacity = training_capacity(training)
+        if count >= minimum:
+            status_text = "✅ МИНИМАЛЬНЫЙ НАБОР НАБРАН"
+            detail = f"На тренировку записано {count} человек. Минимум — {minimum}."
+        else:
+            status_text = "⚠️ МИНИМАЛЬНЫЙ НАБОР НЕ НАБРАН"
+            detail = f"На тренировку записано {count} человек. Минимум — {minimum}. Не хватает {minimum - count}."
+
+        message = (
+            f"{status_text}\n\n"
+            f"🏐 Тренировка через 24 часа\n\n"
+            f"{format_training(training)}\n\n"
+            f"👥 {detail}\n"
+            f"Вместимость: {capacity} мест."
+        )
+
+        for admin_id in ADMINS:
+            try:
+                should_send = create_admin_notification_marker(
+                    admin_id,
+                    training_id,
+                    "minimum_set_24h",
+                )
+                if should_send:
+                    result = send_message(admin_id, message, admin_back_keyboard())
+                    if result and result.get("error"):
+                        logger.warning(
+                            "Admin minimum-set notification failed for %s / %s",
+                            admin_id, training_id,
+                        )
+            except Exception:
+                logger.exception(
+                    "Failed to send minimum-set notification for training %s to admin %s",
+                    training_id,
+                    admin_id,
+                )
+
+
 def process_completion_checks():
     now = datetime.now(TIMEZONE)
     try:
@@ -5447,6 +5519,8 @@ def notification_worker():
     logger.info("Notification worker started")
     while True:
         try:
+            now = datetime.now(TIMEZONE)
+            prepare_admin_minimum_set_notifications(now)
             process_completion_checks()
             process_pending_notifications()
         except Exception:

@@ -767,8 +767,10 @@ def show_schedule(user_id, category=None, week_start=None):
         return
 
     trainings = [
-        training for training in list(trainings or [])
-        if not training_has_passed(training)
+        training
+        for training in list(trainings or [])
+        if row_value(training, "status", "scheduled") == "scheduled"
+        and not training_has_passed(training)
     ]
     grouped = {}
     for training in trainings:
@@ -2334,8 +2336,10 @@ def admin_show_schedule(user_id):
         return
 
     trainings = [
-        training for training in list(trainings or [])
-        if not training_has_passed(training)
+        training
+        for training in list(trainings or [])
+        if row_value(training, "status", "scheduled") == "scheduled"
+        and not training_has_passed(training)
     ]
 
     if not trainings:

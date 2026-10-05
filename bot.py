@@ -2,6 +2,8 @@ import os
 import json
 import logging
 import re
+import threading
+import time
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 
@@ -30,6 +32,17 @@ from database import (
     get_training_attendance,
     add_admin_log,
     get_connection,
+    search_users,
+    admin_add_registration,
+    admin_remove_registration,
+    get_training_registered_vk_ids,
+    get_training_history,
+    search_training_history_by_user,
+    cancel_training,
+    create_notification,
+    get_pending_notifications,
+    mark_notification_sent,
+    mark_notification_failed,
 )
 
 
@@ -279,6 +292,12 @@ def admin_menu():
                 button(
                     "➕ Добавить тренировку",
                     "primary",
+                ),
+            ],
+            [
+                button(
+                    "📚 Архив тренировок",
+                    "secondary",
                 ),
             ],
             [
@@ -2408,6 +2427,26 @@ def admin_show_schedule(user_id):
             "end_time",
             "",
         )
+        level = row_value(
+            training,
+            "level",
+            "",
+        )
+        coach = row_value(
+            training,
+            "coach",
+            "",
+        )
+        location = row_value(
+            training,
+            "location",
+            "",
+        )
+        price = row_value(
+            training,
+            "price",
+            0,
+        )
 
         count = get_training_participant_count(
             row_value(training, "id")
@@ -2415,9 +2454,13 @@ def admin_show_schedule(user_id):
         capacity = training_capacity(training)
 
         schedule_text += (
-            f"⏰ {start_time}–{end_time} | "
-            f"{training_format} | "
-            f"👥 {count}/{capacity}\n"
+            f"⏰ {start_time}–{end_time}\n"
+            f"🔹 Формат: {training_format}\n"
+            f"📊 Уровень: {level}\n"
+            f"🏅 Тренер: {coach}\n"
+            f"📍 Место: {location}\n"
+            f"💰 Цена: {price}₽\n"
+            f"👥 Записано: {count}/{capacity}\n\n"
         )
 
     schedule_text += "\nВыберите тренировку:"
@@ -2509,9 +2552,23 @@ def admin_show_training(
         ],
         [
             button(
+                "➕ Добавить участника",
+                "positive",
+            ),
+            button(
+                "➖ Удалить участника",
+                "negative",
+            ),
+        ],
+        [
+            button(
+                "❌ Отменить тренировку",
+                "negative",
+            ),
+            button(
                 "📋 Посещаемость",
                 "secondary",
-            )
+            ),
         ],
         [
             button(
@@ -2877,6 +2934,311 @@ def admin_show_attendance(
         text,
         admin_back_keyboard(),
     )
+
+
+
+def admin_start_add_participant(user_id, training_id):
+    if user_id not in ADMINS:
+        return
+
+    training = admin_db_training(training_id)
+    if not training:
+        send_message(user_id, "❌ Тренировка не найдена.", admin_back_keyboard())
+        return
+
+    if training_is_full(training):
+        send_message(
+            user_id,
+            "❌ Тренировка уже заполнена. Сначала освободите место.",
+            admin_back_keyboard(),
+        )
+        return
+
+    set_state(
+        user_id,
+        "admin_add_participant_search",
+        {"training_id": training_id},
+    )
+    send_message(
+        user_id,
+        "➕ ДОБАВЛЕНИЕ УЧАСТНИКА\n\n"
+        "Введите имя, фамилию или VK ID пользователя.",
+        admin_back_keyboard(),
+    )
+
+
+def admin_start_remove_participant(user_id, training_id):
+    if user_id not in ADMINS:
+        return
+
+    training = admin_db_training(training_id)
+    if not training:
+        send_message(user_id, "❌ Тренировка не найдена.", admin_back_keyboard())
+        return
+
+    registrations = list(get_registrations(training_id) or [])
+    if not registrations:
+        send_message(
+            user_id,
+            "На тренировке пока нет участников.",
+            admin_back_keyboard(),
+        )
+        return
+
+    buttons = []
+    for registration in registrations:
+        first_name = row_value(registration, "first_name", "") or ""
+        last_name = row_value(registration, "last_name", "") or ""
+        name = f"{first_name} {last_name}".strip() or "Участник"
+        vk_id = row_value(registration, "vk_id", "")
+        buttons.append([button(f"➖ {name} | {vk_id}"[:40], "negative")])
+
+    buttons.append([button("⬅️ К тренировке", "secondary")])
+    buttons = compact_keyboard_buttons(buttons, max_rows=10, max_buttons_per_row=1)
+    set_state(user_id, "admin_remove_participant", {"training_id": training_id})
+    send_message(
+        user_id,
+        "➖ УДАЛЕНИЕ УЧАСТНИКА\n\nВыберите участника:",
+        {"one_time": False, "buttons": buttons},
+    )
+
+
+def admin_search_participants(user_id, training_id, search_text, mode="add"):
+    users = list(search_users(search_text, limit=20) or [])
+    registered_ids = {
+        row_value(x, "vk_id") for x in (get_registrations(training_id) or [])
+    }
+
+    buttons = []
+    for user in users:
+        vk_id = row_value(user, "vk_id")
+        first_name = row_value(user, "first_name", "") or ""
+        last_name = row_value(user, "last_name", "") or ""
+        name = f"{first_name} {last_name}".strip() or "Без имени"
+
+        if mode == "add" and vk_id in registered_ids:
+            continue
+        if mode == "add":
+            label = f"➕ {name} | {vk_id}"
+            buttons.append([button(label[:40], "positive")])
+
+    buttons.append([button("⬅️ К тренировке", "secondary")])
+    buttons = compact_keyboard_buttons(buttons, max_rows=10, max_buttons_per_row=1)
+
+    if mode == "add":
+        if not users or len(buttons) == 1:
+            send_message(
+                user_id,
+                "❌ Пользователь не найден.\n\n"
+                "Попробуйте другое написание имени или VK ID.",
+                admin_back_keyboard(),
+            )
+            set_state(user_id, "admin_add_participant_search", {"training_id": training_id})
+            return
+        set_state(user_id, "admin_add_participant_select", {"training_id": training_id})
+        send_message(
+            user_id,
+            "👤 Найдены пользователи. Выберите нужного:",
+            {"one_time": False, "buttons": buttons},
+        )
+
+
+def admin_add_participant(user_id, training_id, vk_id):
+    try:
+        training = admin_db_training(training_id)
+        if not training:
+            raise ValueError("Тренировка не найдена")
+        if training_is_full(training):
+            raise ValueError("Тренировка заполнена")
+        user = get_user(vk_id)
+        if not user:
+            raise ValueError("Пользователь не найден")
+        admin_add_registration(training_id, vk_id)
+        add_admin_log(user_id, "admin_registration_add", "training", training_id, f"Added VK {vk_id}")
+        send_message(
+            user_id,
+            "✅ Участник добавлен.\n\n" + format_training(admin_db_training(training_id), include_participants=True),
+            admin_back_keyboard(),
+        )
+        send_message(
+            vk_id,
+            "✅ Администратор записал вас на тренировку.\n\n" + format_training(admin_db_training(training_id)),
+            main_menu(vk_id),
+        )
+    except Exception as error:
+        logger.exception("ADMIN ADD PARTICIPANT ERROR")
+        send_message(user_id, f"❌ Не удалось добавить участника.\n\nОшибка: {error}", admin_back_keyboard())
+
+
+def admin_remove_participant(user_id, training_id, vk_id):
+    try:
+        removed = admin_remove_registration(training_id, vk_id)
+        if not removed:
+            raise ValueError("Участник не найден в записи")
+        add_admin_log(user_id, "admin_registration_remove", "training", training_id, f"Removed VK {vk_id}")
+        training = admin_db_training(training_id)
+        send_message(
+            user_id,
+            "✅ Участник удалён.\n\n" + format_training(training, include_participants=True),
+            admin_back_keyboard(),
+        )
+        try:
+            send_message(
+                vk_id,
+                "❌ Администратор отменил вашу запись на тренировку.\n\n" + format_training(training),
+                main_menu(vk_id),
+            )
+        except Exception:
+            logger.exception("Failed to notify removed participant %s", vk_id)
+    except Exception as error:
+        logger.exception("ADMIN REMOVE PARTICIPANT ERROR")
+        send_message(user_id, f"❌ Не удалось удалить участника.\n\nОшибка: {error}", admin_back_keyboard())
+
+
+def admin_start_cancel_training(user_id, training_id):
+    if user_id not in ADMINS:
+        return
+    training = admin_db_training(training_id)
+    if not training:
+        send_message(user_id, "❌ Тренировка не найдена.", admin_back_keyboard())
+        return
+    if row_value(training, "status", "") == "cancelled":
+        send_message(user_id, "Эта тренировка уже отменена.", admin_back_keyboard())
+        return
+    set_state(user_id, "admin_cancel_training", {"training_id": training_id})
+    count = get_training_participant_count(training_id)
+    send_message(
+        user_id,
+        "❌ ОТМЕНА ТРЕНИРОВКИ\n\n" +
+        format_training(training) +
+        f"\n\n👥 Записано: {count}/{training_capacity(training)}\n\n"
+        "После отмены уведомление получат только записанные участники.\n\n"
+        "Отменить тренировку?",
+        {"one_time": False, "buttons": [[button("❌ Да, отменить", "negative"), button("⬅️ Назад", "secondary")]]},
+    )
+
+
+def admin_cancel_training_and_notify(user_id, training_id):
+    training = admin_db_training(training_id)
+    if not training:
+        send_message(user_id, "❌ Тренировка не найдена.", admin_back_keyboard())
+        return
+
+    recipient_ids = get_training_registered_vk_ids(training_id)
+    try:
+        cancel_training(training_id)
+        add_admin_log(
+            user_id,
+            "training_cancel",
+            "training",
+            training_id,
+            f"Training cancelled; notified {len(recipient_ids)} registered users",
+        )
+    except Exception as error:
+        logger.exception("ADMIN CANCEL TRAINING ERROR")
+        send_message(user_id, f"❌ Не удалось отменить тренировку.\n\nОшибка: {error}", admin_back_keyboard())
+        return
+
+    message = (
+        "❌ ТРЕНИРОВКА ОТМЕНЕНА\n\n" +
+        format_training(training) +
+        "\n\nПриносим извинения за неудобства."
+    )
+    sent = 0
+    for vk_id in recipient_ids:
+        try:
+            result = send_message(vk_id, message, main_menu(vk_id))
+            if result and result.get("response") is not None:
+                sent += 1
+        except Exception:
+            logger.exception("Failed cancellation notification to %s", vk_id)
+
+    updated = admin_db_training(training_id)
+    send_message(
+        user_id,
+        "✅ Тренировка отменена.\n\n"
+        f"Уведомление отправлено: {sent}/{len(recipient_ids)} записанным участникам.",
+        admin_back_keyboard(),
+    )
+    if updated:
+        set_state(user_id, "admin_training_details", {"training_id": training_id})
+
+
+def admin_show_archive_menu(user_id):
+    if user_id not in ADMINS:
+        return
+    set_state(user_id, "admin_archive_menu", {})
+    send_message(
+        user_id,
+        "📚 АРХИВ ТРЕНИРОВОК\n\nВыберите способ поиска:",
+        {"one_time": False, "buttons": [
+            [button("📅 По дате", "primary"), button("👤 По участнику", "primary")],
+            [button("⬅️ Админ-панель", "secondary")],
+        ]},
+    )
+
+
+def admin_archive_by_date(user_id, date_text):
+    raw = str(date_text).strip().replace("/", ".")
+    parsed = None
+    for fmt in ("%d.%m.%Y", "%d.%m.%y", "%d.%m"):
+        try:
+            parsed = datetime.strptime(raw, fmt).date()
+            if fmt == "%d.%m":
+                parsed = parsed.replace(year=today_local().year)
+            break
+        except ValueError:
+            pass
+    if not parsed:
+        send_message(user_id, "❌ Дата должна быть в формате ДД.ММ.ГГГГ или ДД.ММ.", admin_back_keyboard())
+        return
+
+    trainings = list(get_training_history(parsed.isoformat(), parsed.isoformat(), include_future=False) or [])
+    if not trainings:
+        send_message(user_id, f"📚 На {format_date(parsed)} тренировок в архиве не найдено.", admin_back_keyboard())
+        return
+
+    text = f"📚 АРХИВ — {format_date(parsed)}\n\n"
+    for training in trainings:
+        count = get_training_participant_count(row_value(training, "id"))
+        status = row_value(training, "status", "")
+        status_text = {"cancelled": "❌ отменена", "completed": "✅ завершена", "scheduled": "🕐 запланирована"}.get(status, status)
+        text += (
+            f"⏰ {row_value(training, 'start_time', '')}–{row_value(training, 'end_time', '')} | "
+            f"{row_value(training, 'format', '')}\n"
+            f"📊 {row_value(training, 'level', '')} | 👥 {count}/{training_capacity(training)} | {status_text}\n\n"
+        )
+    send_message(user_id, text.rstrip(), admin_back_keyboard())
+
+
+def admin_archive_by_user(user_id, search_text):
+    rows = list(search_training_history_by_user(search_text) or [])
+    if not rows:
+        send_message(user_id, "❌ По этому пользователю записей в архиве не найдено.", admin_back_keyboard())
+        return
+
+    first_name = row_value(rows[0], "first_name", "") or ""
+    last_name = row_value(rows[0], "last_name", "") or ""
+    name = f"{first_name} {last_name}".strip() or str(search_text)
+    text = f"📚 АРХИВ УЧАСТНИКА\n\n👤 {name}\n\n"
+    for row in rows:
+        status = row_value(row, "registration_status", "")
+        attendance = row_value(row, "attendance_status", "")
+        reg_mark = "записан" if status == "registered" else "отменил запись"
+        attendance_mark = {"present": "присутствовал", "absent": "отсутствовал", "unknown": "не отмечен", None: "не отмечен"}.get(attendance, attendance)
+        training_status = row_value(row, "status", "")
+        if training_status == "cancelled":
+            training_mark = "❌ тренировка отменена"
+        elif training_status == "completed":
+            training_mark = "✅ завершена"
+        else:
+            training_mark = "🕐 запланирована"
+        text += (
+            f"📅 {format_date(training_date_value(row))}\n"
+            f"⏰ {row_value(row, 'start_time', '')}–{row_value(row, 'end_time', '')} | {row_value(row, 'format', '')}\n"
+            f"{training_mark} | {reg_mark} | {attendance_mark}\n\n"
+        )
+    send_message(user_id, text.rstrip(), admin_back_keyboard())
 
 
 def admin_start_edit_training(user_id, training_id):
@@ -3700,6 +4062,10 @@ def handle_text(
             )
             return
 
+        if text == "📚 Архив тренировок":
+            admin_show_archive_menu(user_id)
+            return
+
         if text == "👤 Режим пользователя":
             show_main_menu(user_id)
             return
@@ -4099,20 +4465,71 @@ def handle_text(
 
     if user_id in ADMINS:
 
+        if state == "admin_archive_menu":
+            if text == "📅 По дате":
+                set_state(user_id, "admin_archive_date", {})
+                send_message(user_id, "📅 Введите дату в формате ДД.ММ.ГГГГ или ДД.ММ", admin_back_keyboard())
+                return
+            if text == "👤 По участнику":
+                set_state(user_id, "admin_archive_user", {})
+                send_message(user_id, "👤 Введите имя, фамилию или VK ID участника", admin_back_keyboard())
+                return
+
+        if state == "admin_archive_date":
+            admin_archive_by_date(user_id, text)
+            return
+
+        if state == "admin_archive_user":
+            admin_archive_by_user(user_id, text)
+            return
+
+        if state == "admin_add_participant_search":
+            admin_search_participants(user_id, state_data.get("training_id"), text, "add")
+            return
+
+        if state == "admin_add_participant_select":
+            training_id = state_data.get("training_id")
+            match = re.search(r"\|\s*(\d+)\s*$", text)
+            if not match:
+                send_message(user_id, "❌ Не удалось определить пользователя. Выберите кнопку ещё раз.", admin_back_keyboard())
+                return
+            admin_add_participant(user_id, training_id, int(match.group(1)))
+            return
+
+        if state == "admin_remove_participant":
+            if text == "⬅️ К тренировке":
+                training = admin_db_training(state_data.get("training_id"))
+                if training:
+                    admin_show_training(user_id, training)
+                return
+            match = re.search(r"\|\s*(\d+)\s*$", text)
+            if not match:
+                send_message(user_id, "❌ Не удалось определить участника.", admin_back_keyboard())
+                return
+            admin_remove_participant(user_id, state_data.get("training_id"), int(match.group(1)))
+            return
+
+        if state == "admin_cancel_training":
+            if text == "❌ Да, отменить":
+                admin_cancel_training_and_notify(user_id, state_data.get("training_id"))
+                return
+
         if state == "admin_training_details":
 
             training_id = state_data.get(
                 "training_id"
             )
 
-            if (
-                text
-                == "👥 Посмотреть участников"
-            ):
-                admin_show_participants(
-                    user_id,
-                    training_id,
-                )
+            if text == "➕ Добавить участника":
+                admin_start_add_participant(user_id, training_id)
+                return
+
+            if text == "➖ Удалить участника":
+                admin_start_remove_participant(user_id, training_id)
+                return
+
+            if text == "❌ Отменить тренировку":
+                admin_start_cancel_training(user_id, training_id)
                 return
 
             if text == "📋 Посещаемость":
@@ -4594,6 +5011,115 @@ def callback():
         return "ok", 200
 
 
+
+# ============================================================
+# NOTIFICATION WORKER
+# ============================================================
+
+def training_start_datetime(training):
+    training_date = training_date_value(training)
+    start_time = row_value(training, "start_time", "00:00")
+    parsed_time = datetime.strptime(start_time, "%H:%M").time()
+    return datetime.combine(training_date, parsed_time).replace(tzinfo=TIMEZONE)
+
+
+def notification_text(training, hours_before):
+    if hours_before == 24:
+        title = "ЗАВТРА У ВАС ТРЕНИРОВКА"
+        lead = "Напоминаем, что завтра у вас тренировка."
+    else:
+        title = "ТРЕНИРОВКА ЧЕРЕЗ 2 ЧАСА"
+        lead = "Напоминаем, что через 2 часа у вас тренировка."
+    return (
+        f"🏐 {title}\n\n"
+        f"{lead}\n\n"
+        + format_training(training)
+        + "\n\nДо встречи на площадке!"
+    )
+
+
+def prepare_training_notifications(now):
+    today = now.date()
+    end_date = today + timedelta(days=2)
+    trainings = admin_db_trainings(today.isoformat(), end_date.isoformat())
+
+    for training in trainings:
+        if row_value(training, "status", "") != "scheduled":
+            continue
+        try:
+            start_dt = training_start_datetime(training)
+        except Exception:
+            logger.exception("Invalid training datetime for notification")
+            continue
+        if start_dt <= now:
+            continue
+
+        for hours_before, notification_type in ((24, "training_24h"), (2, "training_2h")):
+            scheduled_for = start_dt - timedelta(hours=hours_before)
+            if scheduled_for > now:
+                continue
+            for vk_id in get_training_registered_vk_ids(row_value(training, "id")):
+                try:
+                    create_notification(
+                        vk_id,
+                        row_value(training, "id"),
+                        notification_type,
+                        scheduled_for.isoformat(),
+                    )
+                except Exception:
+                    logger.exception("Failed to create notification for %s", vk_id)
+
+
+def process_pending_notifications():
+    now = datetime.now(TIMEZONE)
+    prepare_training_notifications(now)
+    current_text = now.isoformat()
+    pending = get_pending_notifications(current_text)
+
+    for notification in pending:
+        notification_id = row_value(notification, "id")
+        user_id = row_value(notification, "vk_id")
+        training_id = row_value(notification, "training_id")
+        notification_type = row_value(notification, "notification_type", "")
+
+        training = admin_db_training(training_id)
+        if not training or row_value(training, "status", "") != "scheduled":
+            mark_notification_failed(notification_id)
+            continue
+
+        try:
+            if notification_type == "training_24h":
+                hours_before = 24
+            elif notification_type == "training_2h":
+                hours_before = 2
+            else:
+                mark_notification_failed(notification_id)
+                continue
+
+            result = send_message(
+                user_id,
+                notification_text(training, hours_before),
+                main_menu(user_id),
+            )
+            if result and result.get("error"):
+                mark_notification_failed(notification_id)
+            else:
+                mark_notification_sent(notification_id)
+        except Exception:
+            logger.exception("Failed to send notification %s", notification_id)
+            mark_notification_failed(notification_id)
+
+
+def notification_worker():
+    logger.info("Notification worker started")
+    while True:
+        try:
+            process_pending_notifications()
+        except Exception:
+            logger.exception("Notification worker iteration failed")
+        time.sleep(60)
+
+
 # ============================================================
 # HEALTH
 # ============================================================
@@ -4709,6 +5235,13 @@ def startup():
 if __name__ == "__main__":
 
     startup()
+
+    notification_thread = threading.Thread(
+        target=notification_worker,
+        name="volley-wave-notifications",
+        daemon=True,
+    )
+    notification_thread.start()
 
     app.run(
         host="0.0.0.0",

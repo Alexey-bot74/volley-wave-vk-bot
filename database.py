@@ -497,6 +497,34 @@ def get_user(vk_id):
     return row
 
 
+def search_users(search_text, limit=20):
+    """Поиск пользователей по имени, фамилии или VK ID."""
+    conn = get_connection()
+    try:
+        text = str(search_text or "").strip()
+        like = f"%{text}%"
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM users
+            WHERE first_name LIKE ?
+               OR last_name LIKE ?
+               OR (first_name || ' ' || last_name) LIKE ?
+               OR CAST(vk_id AS TEXT) LIKE ?
+            ORDER BY first_name, last_name
+            LIMIT ?
+            """,
+            (like, like, like, like, int(limit)),
+        ).fetchall()
+        return rows
+    finally:
+        conn.close()
+
+
+def get_user_by_vk_id(vk_id):
+    return get_user(vk_id)
+
+
 def is_user_blocked(vk_id):
     user = get_user(vk_id)
 
@@ -1416,6 +1444,98 @@ def get_user_registrations(
     return rows
 
 
+def admin_add_registration(training_id, user_vk_id):
+    """Добавляет пользователя на тренировку без пользовательского ограничения по времени."""
+    return add_registration(training_id, user_vk_id)
+
+
+def admin_remove_registration(training_id, user_vk_id, reason="admin_removed"):
+    return cancel_registration(training_id, user_vk_id, reason)
+
+
+def get_training_registered_vk_ids(training_id):
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT users.vk_id
+            FROM registrations
+            JOIN users ON users.id = registrations.user_id
+            WHERE registrations.training_id = ?
+              AND registrations.status = 'registered'
+            ORDER BY registrations.registered_at
+            """,
+            (training_id,),
+        ).fetchall()
+        return [row["vk_id"] for row in rows]
+    finally:
+        conn.close()
+
+
+def get_training_history(from_date=None, to_date=None, include_future=False):
+    conn = get_connection()
+    try:
+        query = """
+            SELECT *
+            FROM trainings
+            WHERE 1 = 1
+        """
+        params = []
+        if from_date:
+            query += " AND training_date >= ?"
+            params.append(from_date)
+        if to_date:
+            query += " AND training_date <= ?"
+            params.append(to_date)
+        if not include_future:
+            query += " AND (training_date < date('now', 'localtime') OR status IN ('completed', 'cancelled'))"
+        query += " ORDER BY training_date DESC, start_time DESC, id DESC"
+        return conn.execute(query, params).fetchall()
+    finally:
+        conn.close()
+
+
+def search_training_history_by_user(search_text):
+    conn = get_connection()
+    try:
+        text = str(search_text or "").strip()
+        like = f"%{text}%"
+        rows = conn.execute(
+            """
+            SELECT
+                trainings.*,
+                registrations.id AS registration_id,
+                registrations.status AS registration_status,
+                registrations.registered_at,
+                registrations.cancelled_at,
+                attendance.status AS attendance_status,
+                users.vk_id,
+                users.first_name,
+                users.last_name
+            FROM registrations
+            JOIN trainings ON trainings.id = registrations.training_id
+            JOIN users ON users.id = registrations.user_id
+            LEFT JOIN attendance ON attendance.registration_id = registrations.id
+            WHERE (
+                    users.first_name LIKE ?
+                 OR users.last_name LIKE ?
+                 OR (users.first_name || ' ' || users.last_name) LIKE ?
+                 OR CAST(users.vk_id AS TEXT) LIKE ?
+            )
+              AND (
+                    trainings.training_date < date('now', 'localtime')
+                 OR trainings.status IN ('completed', 'cancelled')
+              )
+            ORDER BY trainings.training_date DESC, trainings.start_time DESC
+            LIMIT 200
+            """,
+            (like, like, like, like),
+        ).fetchall()
+        return rows
+    finally:
+        conn.close()
+
+
 # ============================================================
 # WAITLIST
 # ============================================================
@@ -1981,6 +2101,20 @@ def mark_notification_sent(
 
     conn.commit()
     conn.close()
+
+
+def get_or_create_notification(
+    user_vk_id,
+    training_id,
+    notification_type,
+    scheduled_for,
+):
+    return create_notification(
+        user_vk_id,
+        training_id,
+        notification_type,
+        scheduled_for,
+    )
 
 
 def mark_notification_failed(

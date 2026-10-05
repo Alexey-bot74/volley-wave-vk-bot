@@ -685,15 +685,38 @@ def show_prices(user_id):
 
 
 def show_locations(user_id):
+    keyboard = {
+        "one_time": False,
+        "buttons": [
+            [
+                {
+                    "action": {
+                        "type": "open_link",
+                        "link": "https://2gis.ru/chelyabinsk/geo/70000001025433237",
+                        "label": "🗺 2ГИС",
+                    },
+                    "color": "primary",
+                },
+                {
+                    "action": {
+                        "type": "open_link",
+                        "link": "https://yandex.ru/navi/org/arena/8201821924?si=rtfatacyan07qb5rxz5jgad8jc",
+                        "label": "🗺 Яндекс Карты",
+                    },
+                    "color": "primary",
+                },
+            ],
+            [{"action": {"type": "text", "label": "⬅️ Назад"}, "color": "secondary"}],
+        ],
+    }
     send_message(
         user_id,
         "📍 ГДЕ ТРЕНИРУЕМСЯ\n\n"
-        "☀️ Летом:\n"
-        "Парк Гагарина\n\n"
         "❄️ Зимой:\n"
-        "СК «Арена»\n"
-        "ул. Молодогвардейцев, 7",
-        back_keyboard(user_id),
+        "🏟 СК «Арена»\n"
+        "ул. Молодогвардейцев, 7\n\n"
+        "Выберите карту:",
+        keyboard,
     )
 
 

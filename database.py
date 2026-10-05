@@ -1,5 +1,5 @@
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 
@@ -248,6 +248,56 @@ def init_db():
             )
             REFERENCES registrations(id)
             ON DELETE CASCADE
+        )
+        """
+    )
+
+    # --------------------------------------------------------
+    # COMPLETION CHECK
+    # --------------------------------------------------------
+
+    # Флаг нужен для одноразового запроса админу после окончания
+    # тренировки. Добавляется безопасно и для уже существующей БД.
+    columns = {
+        row["name"]
+        for row in cursor.execute(
+            "PRAGMA table_info(trainings)"
+        ).fetchall()
+    }
+
+    if "completion_check_sent_at" not in columns:
+        cursor.execute(
+            """
+            ALTER TABLE trainings
+            ADD COLUMN completion_check_sent_at TEXT
+            """
+        )
+
+    if "comment" not in columns:
+        cursor.execute(
+            """
+            ALTER TABLE trainings
+            ADD COLUMN comment TEXT
+            """
+        )
+
+    # --------------------------------------------------------
+    # TRAINING FEEDBACK
+    # --------------------------------------------------------
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS training_feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            training_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            rating INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5),
+            comment TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(training_id, user_id),
+            FOREIGN KEY(training_id) REFERENCES trainings(id) ON DELETE CASCADE,
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
         )
         """
     )
@@ -1495,6 +1545,31 @@ def get_training_history(from_date=None, to_date=None, include_future=False):
         conn.close()
 
 
+def get_training_registrations_history(training_id):
+    """Все записи конкретной тренировки, включая отменённые, с посещаемостью."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                registrations.*,
+                users.vk_id,
+                users.first_name,
+                users.last_name,
+                attendance.status AS attendance_status
+            FROM registrations
+            JOIN users ON users.id = registrations.user_id
+            LEFT JOIN attendance ON attendance.registration_id = registrations.id
+            WHERE registrations.training_id = ?
+            ORDER BY registrations.registered_at
+            """,
+            (training_id,),
+        ).fetchall()
+        return rows
+    finally:
+        conn.close()
+
+
 def search_training_history_by_user(search_text):
     conn = get_connection()
     try:
@@ -1819,6 +1894,171 @@ def mark_attendance(
     conn.close()
 
 
+def complete_training(
+    training_id,
+    marked_by=None,
+):
+    """Пометить тренировку состоявшейся и автоматически отметить всех записанных присутствовавшими."""
+    conn = get_connection()
+
+    try:
+        training = conn.execute(
+            "SELECT id FROM trainings WHERE id = ?",
+            (training_id,),
+        ).fetchone()
+
+        if not training:
+            return False
+
+        registrations = conn.execute(
+            """
+            SELECT id
+            FROM registrations
+            WHERE training_id = ?
+              AND status = 'registered'
+            """,
+            (training_id,),
+        ).fetchall()
+
+        marked_at = now_text()
+
+        for registration in registrations:
+            registration_id = registration["id"]
+
+            existing = conn.execute(
+                """
+                SELECT id
+                FROM attendance
+                WHERE registration_id = ?
+                """,
+                (registration_id,),
+            ).fetchone()
+
+            if existing:
+                conn.execute(
+                    """
+                    UPDATE attendance
+                    SET status = 'present',
+                        marked_by = ?,
+                        marked_at = ?,
+                        comment = NULL
+                    WHERE registration_id = ?
+                    """,
+                    (marked_by, marked_at, registration_id),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO attendance (
+                        registration_id,
+                        status,
+                        marked_by,
+                        marked_at
+                    )
+                    VALUES (?, 'present', ?, ?)
+                    """,
+                    (registration_id, marked_by, marked_at),
+                )
+
+        conn.execute(
+            """
+            UPDATE trainings
+            SET status = 'completed'
+            WHERE id = ?
+            """,
+            (training_id,),
+        )
+
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+def cancel_training_as_not_held(
+    training_id,
+):
+    """Пометить тренировку как не состоявшуюся без посещаемости."""
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            """
+            UPDATE trainings
+            SET status = 'cancelled'
+            WHERE id = ?
+              AND status = 'scheduled'
+            """,
+            (training_id,),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def get_training_by_number(
+    training_number,
+):
+    conn = get_connection()
+    try:
+        return conn.execute(
+            """
+            SELECT *
+            FROM trainings
+            WHERE training_number = ?
+            LIMIT 1
+            """,
+            (training_number,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+
+def mark_completion_check_sent(
+    training_id,
+):
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            UPDATE trainings
+            SET completion_check_sent_at = ?
+            WHERE id = ?
+            """,
+            (now_text(), training_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_trainings_needing_completion_check(
+    current_time,
+    delay_minutes=10,
+):
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM trainings
+            WHERE status = 'scheduled'
+              AND completion_check_sent_at IS NULL
+              AND datetime(training_date || ' ' || end_time)
+                    <= datetime(?)
+            ORDER BY training_date ASC, start_time ASC, id ASC
+            """,
+            (
+                (datetime.fromisoformat(current_time) - timedelta(minutes=delay_minutes)).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                ),
+            ),
+        ).fetchall()
+        return rows
+    finally:
+        conn.close()
+
+
 def get_training_attendance(
     training_id,
 ):
@@ -1854,6 +2094,76 @@ def get_training_attendance(
     conn.close()
 
     return rows
+
+
+# ============================================================
+# TRAINING COMMENTS / FEEDBACK
+# ============================================================
+
+def update_training_comment(training_id, comment):
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            "UPDATE trainings SET comment = ?, updated_at = ? WHERE id = ?",
+            (comment, now_text(), training_id),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def get_training_feedback(training_id, user_vk_id):
+    conn = get_connection()
+    try:
+        return conn.execute(
+            """
+            SELECT training_feedback.*
+            FROM training_feedback
+            JOIN users ON users.id = training_feedback.user_id
+            WHERE training_feedback.training_id = ? AND users.vk_id = ?
+            LIMIT 1
+            """,
+            (training_id, user_vk_id),
+        ).fetchone()
+    finally:
+        conn.close()
+
+
+def save_training_feedback(training_id, user_vk_id, rating, comment=""):
+    conn = get_connection()
+    try:
+        user = conn.execute("SELECT id FROM users WHERE vk_id = ?", (user_vk_id,)).fetchone()
+        if not user:
+            return False
+        now = now_text()
+        conn.execute(
+            """
+            INSERT INTO training_feedback(training_id, user_id, rating, comment, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(training_id, user_id) DO UPDATE SET
+                rating = excluded.rating,
+                comment = excluded.comment,
+                updated_at = excluded.updated_at
+            """,
+            (training_id, user["id"], int(rating), comment, now, now),
+        )
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+def get_training_feedback_summary(training_id):
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) AS count, COALESCE(AVG(rating), 0) AS average FROM training_feedback WHERE training_id = ?",
+            (training_id,),
+        ).fetchone()
+        return {"count": int(row["count"] or 0), "average": float(row["average"] or 0)}
+    finally:
+        conn.close()
 
 
 # ============================================================

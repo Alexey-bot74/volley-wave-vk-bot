@@ -2106,32 +2106,139 @@ def create_training_directly(
 
 def ensure_default_trainings_for_date(training_date):
     """
-    Гарантирует наличие всех стандартных тренировок для конкретной даты.
+    Гарантирует наличие стандартных тренировок для конкретной даты.
 
-    Используется архивом в том числе для уже прошедших дат: если стандартный
-    слот отсутствует в базе, он создаётся заново, чтобы тренировку можно было
-    отметить как прошедшую или не состоявшуюся.
+    Правила:
+    - отсутствующий стандартный слот создаётся;
+    - существующая стандартная тренировка (template_id='default')
+      приводится к актуальному шаблону;
+    - отменённая стандартная тренировка НЕ восстанавливается;
+    - тренировка, добавленная администратором вручную (template_id !=
+      'default'), никогда не изменяется и не удаляется.
     """
+    connection = get_connection()
     created = 0
-    for template in DEFAULT_TEMPLATES:
-        if training_date.weekday() != template["weekday"]:
-            continue
-        try:
-            if create_training_directly(template, training_date):
-                created += 1
-        except Exception:
-            logger.exception(
-                "Failed to ensure default training for %s at %s",
-                training_date,
-                template.get("start_time"),
+    updated = 0
+
+    try:
+        cursor = connection.cursor()
+
+        for template in DEFAULT_TEMPLATES:
+            if training_date.weekday() != template["weekday"]:
+                continue
+
+            cursor.execute(
+                """
+                SELECT * FROM trainings
+                WHERE training_date = ?
+                  AND start_time = ?
+                  AND end_time = ?
+                LIMIT 1
+                """,
+                (
+                    training_date.isoformat(),
+                    template["start_time"],
+                    template["end_time"],
+                ),
             )
-    if created:
-        logger.info(
-            "Restored %s default training(s) for archive date %s",
-            created,
+            existing = cursor.fetchone()
+
+            if existing:
+                status = str(row_value(existing, "status", "scheduled"))
+                template_id = row_value(existing, "template_id", None)
+
+                # Отменённые тренировки не восстанавливаем.
+                if status == "cancelled":
+                    continue
+
+                # Ручные тренировки администратора не трогаем.
+                if template_id != "default":
+                    continue
+
+                cursor.execute(
+                    """
+                    UPDATE trainings
+                    SET title=?, category=?, age_group=?, level=?, format=?,
+                        coach=?, capacity=?, price=?, location=?, weekday=?,
+                        status='scheduled', updated_at=CURRENT_TIMESTAMP
+                    WHERE id=?
+                    """,
+                    (
+                        template["title"],
+                        template["category"],
+                        template["age_group"],
+                        template["level"],
+                        template["format"],
+                        template["coach"],
+                        template["capacity"],
+                        template["price"],
+                        template["location"],
+                        WEEKDAYS[training_date.weekday()],
+                        row_value(existing, "id"),
+                    ),
+                )
+                updated += 1
+                continue
+
+            # Слота нет вообще — создаём стандартную тренировку.
+            cursor.execute(
+                """
+                SELECT COALESCE(MAX(training_number), 0) + 1
+                FROM trainings
+                """
+            )
+            training_number = cursor.fetchone()[0]
+
+            cursor.execute(
+                """
+                INSERT INTO trainings (
+                    training_number, training_date, weekday, start_time, end_time,
+                    title, category, age_group, level, format, coach, capacity,
+                    price, location, status, template_id, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled',
+                        'default', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """,
+                (
+                    training_number,
+                    training_date.isoformat(),
+                    WEEKDAYS[training_date.weekday()],
+                    template["start_time"],
+                    template["end_time"],
+                    template["title"],
+                    template["category"],
+                    template["age_group"],
+                    template["level"],
+                    template["format"],
+                    template["coach"],
+                    template["capacity"],
+                    template["price"],
+                    template["location"],
+                ),
+            )
+            created += 1
+
+        connection.commit()
+
+        if created or updated:
+            logger.info(
+                "Default schedule ensured for %s: created=%s updated=%s",
+                training_date,
+                created,
+                updated,
+            )
+
+        return created + updated
+
+    except Exception:
+        connection.rollback()
+        logger.exception(
+            "Failed to ensure default trainings for %s",
             training_date,
         )
-    return created
+        raise
+    finally:
+        connection.close()
 
 
 def generate_default_trainings(

@@ -824,6 +824,19 @@ def show_schedule(user_id, category=None, week_start=None):
     end_date = week_start + timedelta(days=6)
     category_name = "Дети" if category == "children" else "Взрослые"
 
+    # В разделе «Расписание» используем тот же механизм гарантии
+    # стандартных тренировок, что и в «Записаться». Это особенно важно
+    # для будущих недель: если стандартные записи ещё не созданы в БД,
+    # они будут созданы перед чтением расписания. Отменённые тренировки
+    # и ручные тренировки админа функция не восстанавливает/не изменяет.
+    try:
+        ensure_date = week_start
+        while ensure_date <= end_date:
+            ensure_default_trainings_for_date(ensure_date)
+            ensure_date += timedelta(days=1)
+    except Exception:
+        logger.exception("Failed to ensure default trainings for schedule week")
+
     try:
         trainings = get_upcoming_trainings(
             from_date=max(week_start, today).isoformat() if week_start == current_week else week_start.isoformat(),
@@ -4721,22 +4734,6 @@ def handle_text(
         return
 
     # --------------------------------------------------------
-    # WEEK SCHEDULE -> DIRECT BOOKING
-    # --------------------------------------------------------
-
-    if state == "schedule_week":
-        training = find_training_from_button(text)
-        if training:
-            show_training_for_booking(user_id, training)
-        else:
-            send_message(
-                user_id,
-                "❌ Тренировка не найдена. Откройте расписание ещё раз.",
-                back_keyboard(user_id),
-            )
-        return
-
-    # --------------------------------------------------------
     # SCHEDULE WEEK NAVIGATION
     # --------------------------------------------------------
 
@@ -4755,6 +4752,20 @@ def handle_text(
             if target <= today_week + timedelta(days=28):
                 show_schedule(user_id, category, target)
             return
+
+        # Кнопка тренировки обрабатывается только после навигации.
+        # Иначе текст «Следующая неделя ➡️» попадал в
+        # find_training_from_button() и давал «Тренировка не найдена».
+        training = find_training_from_button(text)
+        if training:
+            show_training_for_booking(user_id, training)
+        else:
+            send_message(
+                user_id,
+                "❌ Тренировка не найдена. Откройте расписание ещё раз.",
+                back_keyboard(user_id),
+            )
+        return
 
     # --------------------------------------------------------
     # BOOKING WEEK NAVIGATION

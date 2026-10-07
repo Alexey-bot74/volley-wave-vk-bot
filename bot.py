@@ -2064,6 +2064,30 @@ def create_training_directly(
             cursor.fetchone()[0]
         )
 
+        # trainings.template_id — это INTEGER с внешним ключом на
+        # training_templates(id). Раньше сюда записывалась строка
+        # "default", из-за чего SQLite выдавал FOREIGN KEY constraint failed
+        # и стандартные тренировки не создавались. Находим реальный ID
+        # соответствующего шаблона.
+        cursor.execute(
+            """
+            SELECT id
+            FROM training_templates
+            WHERE weekday = ?
+              AND start_time = ?
+              AND end_time = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (
+                template["weekday"],
+                template["start_time"],
+                template["end_time"],
+            ),
+        )
+        template_row = cursor.fetchone()
+        template_id = template_row[0] if template_row else None
+
         cursor.execute(
             """
             INSERT INTO trainings (
@@ -2110,7 +2134,7 @@ def create_training_directly(
                 template["price"],
                 template["location"],
                 "scheduled",
-                "default",
+                template_id,
             ),
         )
 
@@ -2181,7 +2205,42 @@ def ensure_default_trainings_for_date(training_date):
                     continue
 
                 # Ручные тренировки администратора не трогаем.
-                if template_id != "default":
+                # Стандартная тренировка определяется по реальному FK-ID
+                # шаблона training_templates, а не по строке "default".
+                template_row = cursor.execute(
+                    """
+                    SELECT id
+                    FROM training_templates
+                    WHERE weekday = ?
+                      AND start_time = ?
+                      AND end_time = ?
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (
+                        template["weekday"],
+                        template["start_time"],
+                        template["end_time"],
+                    ),
+                ).fetchone()
+                expected_template_id = template_row[0] if template_row else None
+
+                # Если это старая стандартная тренировка без template_id,
+                # узнаём её по полному совпадению с текущим шаблоном.
+                is_default = (
+                    expected_template_id is not None
+                    and template_id == expected_template_id
+                )
+                if not is_default and template_id is None:
+                    is_default = all(
+                        row_value(existing, key_name) == template[key_name]
+                        for key_name in (
+                            "title", "category", "age_group", "level", "format",
+                            "coach", "capacity", "price", "location",
+                        )
+                    )
+
+                if not is_default:
                     continue
 
                 cursor.execute(
@@ -2218,6 +2277,27 @@ def ensure_default_trainings_for_date(training_date):
             )
             training_number = cursor.fetchone()[0]
 
+            # template_id — INTEGER с FK на training_templates(id).
+            # Используем реальный ID шаблона, а не строку "default".
+            cursor.execute(
+                """
+                SELECT id
+                FROM training_templates
+                WHERE weekday = ?
+                  AND start_time = ?
+                  AND end_time = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (
+                    template["weekday"],
+                    template["start_time"],
+                    template["end_time"],
+                ),
+            )
+            template_row = cursor.fetchone()
+            template_id = template_row[0] if template_row else None
+
             cursor.execute(
                 """
                 INSERT INTO trainings (
@@ -2225,8 +2305,8 @@ def ensure_default_trainings_for_date(training_date):
                     title, category, age_group, level, format, coach, capacity,
                     price, location, status, template_id, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled',
-                        'default', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """,
                 (
                     training_number,
@@ -2243,6 +2323,7 @@ def ensure_default_trainings_for_date(training_date):
                     template["capacity"],
                     template["price"],
                     template["location"],
+                    template_id,
                 ),
             )
             created += 1
@@ -2401,11 +2482,31 @@ def sync_future_default_trainings():
                 (row["id"],),
             ).fetchone()["c"]
 
-            # Явно помеченные стандартные тренировки обновляем.
+            # trainings.template_id — INTEGER и является FK на
+            # training_templates(id). Поэтому стандартность определяем
+            # по реальному ID шаблона, а не по строке "default".
+            template_id_row = conn.execute(
+                """
+                SELECT id
+                FROM training_templates
+                WHERE weekday = ?
+                  AND start_time = ?
+                  AND end_time = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (key[0], key[1], key[2]),
+            ).fetchone()
+            template_id = template_id_row["id"] if template_id_row else None
+
+            is_default = (
+                template_id is not None
+                and row["template_id"] == template_id
+            )
+
             # Старые стандартные строки без template_id распознаём по полному
-            # совпадению с шаблоном и один раз помечаем как default.
-            is_default = row["template_id"] == "default"
-            if template and not is_default:
+            # совпадению с актуальным шаблоном и привязываем к его ID.
+            if template and not is_default and row["template_id"] is None:
                 is_default = all(
                     row[key_name] == template[key_name]
                     for key_name in (
@@ -2418,17 +2519,18 @@ def sync_future_default_trainings():
                 conn.execute(
                     """UPDATE trainings
                     SET title=?, category=?, age_group=?, level=?, format=?, coach=?,
-                        capacity=?, price=?, location=?, template_id='default',
+                        capacity=?, price=?, location=?, template_id=?,
                         updated_at=CURRENT_TIMESTAMP
                     WHERE id=?""",
                     (
                         template["title"], template["category"], template["age_group"],
                         template["level"], template["format"], template["coach"],
                         template["capacity"], template["price"], template["location"],
+                        template_id,
                         row["id"],
                     ),
                 )
-            elif not template and row["template_id"] == "default" and registered == 0:
+            elif not template and template_id is not None and row["template_id"] == template_id and registered == 0:
                 conn.execute("DELETE FROM trainings WHERE id = ?", (row["id"],))
             # Ручная тренировка администратора здесь намеренно не меняется.
 

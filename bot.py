@@ -84,6 +84,7 @@ last_active_admin_id = None
 
 # Защита от двойных/параллельных нажатий во время обработки запроса.
 processing_users = set()
+processing_typing_threads = {}
 
 
 # ============================================================
@@ -231,6 +232,34 @@ def set_typing_activity(user_id):
         })
     except Exception:
         logger.exception("Failed to set typing activity for %s", user_id)
+
+
+def start_typing_indicator(user_id):
+    """Поддерживает индикатор печати на время обработки запроса."""
+    import threading
+
+    stop_event = threading.Event()
+
+    def worker():
+        while not stop_event.is_set():
+            set_typing_activity(user_id)
+            stop_event.wait(4)
+
+    thread = threading.Thread(
+        target=worker,
+        name=f"typing-{user_id}",
+        daemon=True,
+    )
+    processing_typing_threads[user_id] = stop_event
+    thread.start()
+    return stop_event
+
+
+def stop_typing_indicator(user_id):
+    """Останавливает индикатор печати пользователя."""
+    stop_event = processing_typing_threads.pop(user_id, None)
+    if stop_event:
+        stop_event.set()
 
 
 def send_message(user_id, message, keyboard=None):
@@ -5545,13 +5574,15 @@ def callback():
             return "ok", 200
 
         processing_users.add(numeric_user_id)
+        typing_stop_event = None
         try:
-            set_typing_activity(numeric_user_id)
+            typing_stop_event = start_typing_indicator(numeric_user_id)
             handle_text(
                 numeric_user_id,
                 str(text),
             )
         finally:
+            stop_typing_indicator(numeric_user_id)
             processing_users.discard(numeric_user_id)
 
         return "ok", 200

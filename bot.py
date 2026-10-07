@@ -78,6 +78,13 @@ ADMINS = {
     148372158,
 }
 
+# Текущий администратор, который последним взаимодействовал с ботом.
+# Админские сигналы отправляются только ему, а не всем администраторам.
+last_active_admin_id = None
+
+# Защита от двойных/параллельных нажатий во время обработки запроса.
+processing_users = set()
+
 
 # ============================================================
 # LOGGING
@@ -213,6 +220,17 @@ def compact_keyboard_buttons(buttons, max_rows=10, max_buttons_per_row=2):
     if nav:
         content_rows.append(nav[:max_buttons_per_row])
     return content_rows
+
+
+def set_typing_activity(user_id):
+    """Показывает пользователю, что бот обрабатывает запрос."""
+    try:
+        vk_api("messages.setActivity", {
+            "user_id": user_id,
+            "type": "typing",
+        })
+    except Exception:
+        logger.exception("Failed to set typing activity for %s", user_id)
 
 
 def send_message(user_id, message, keyboard=None):
@@ -713,6 +731,7 @@ def show_locations(user_id):
         "❄️ Зимой:\n"
         "🏟 СК «Арена»\n"
         "ул. Молодогвардейцев, 7\n\n"
+        "🔑 Для получения ключа от ящика возьмите с собой наличные 100₽.\n\n"
         "Выберите карту:",
         keyboard,
     )
@@ -887,6 +906,17 @@ def show_booking_week(user_id, category, week_start=None):
         week_start = current_week
 
     end_date = week_start + timedelta(days=6)
+
+    # Перед открытием недели гарантируем наличие стандартных тренировок.
+    # Это защищает от пропавшего расписания после перезапуска Render.
+    try:
+        current_date = week_start
+        while current_date <= end_date:
+            ensure_default_trainings_for_date(current_date)
+            current_date += timedelta(days=1)
+    except Exception:
+        logger.exception("Failed to ensure default trainings for booking week")
+
     category_names = {"children": "Дети", "adults": "Взрослые", "all": "Все"}
     category_name = category_names.get(category, "Все")
 
@@ -1246,7 +1276,7 @@ def show_training_for_booking(
         buttons.append(
             [
                 button(
-                    "✅ Записаться",
+                    "✅ Подтвердить запись",
                     "positive",
                 )
             ]
@@ -2051,7 +2081,7 @@ def create_training_directly(
                 template["price"],
                 template["location"],
                 "scheduled",
-                None,
+                "default",
             ),
         )
 
@@ -2205,7 +2235,13 @@ LEGACY_DEFAULT_SLOT_KEYS = {
 }
 
 def sync_future_default_trainings():
-    """Обновляет будущие тренировки под новое базовое расписание, не трогая уже записанных клиентов."""
+    """
+    Обновляет только стандартные тренировки.
+
+    Важно: тренировки, добавленные администратором вручную, никогда не
+    перезаписываются и не удаляются этой синхронизацией, даже если их время
+    совпадает со стандартным слотом.
+    """
     today = today_local()
     end_date = today + timedelta(days=42)
     expected = {
@@ -2222,18 +2258,44 @@ def sync_future_default_trainings():
             key = (row["weekday"], row["start_time"], row["end_time"])
             if key not in LEGACY_DEFAULT_SLOT_KEYS:
                 continue
+
             template = expected.get(key)
             registered = conn.execute(
                 "SELECT COUNT(*) AS c FROM registrations WHERE training_id = ? AND status = 'registered'",
                 (row["id"],),
             ).fetchone()["c"]
-            if template:
-                conn.execute(
-                    """UPDATE trainings SET title=?, category=?, age_group=?, level=?, format=?, coach=?, capacity=?, price=?, location=?, updated_at=CURRENT_TIMESTAMP WHERE id=?""",
-                    (template["title"], template["category"], template["age_group"], template["level"], template["format"], template["coach"], template["capacity"], template["price"], template["location"], row["id"]),
+
+            # Явно помеченные стандартные тренировки обновляем.
+            # Старые стандартные строки без template_id распознаём по полному
+            # совпадению с шаблоном и один раз помечаем как default.
+            is_default = row["template_id"] == "default"
+            if template and not is_default:
+                is_default = all(
+                    row[key_name] == template[key_name]
+                    for key_name in (
+                        "title", "category", "age_group", "level", "format",
+                        "coach", "capacity", "price", "location",
+                    )
                 )
-            elif registered == 0:
+
+            if template and is_default:
+                conn.execute(
+                    """UPDATE trainings
+                    SET title=?, category=?, age_group=?, level=?, format=?, coach=?,
+                        capacity=?, price=?, location=?, template_id='default',
+                        updated_at=CURRENT_TIMESTAMP
+                    WHERE id=?""",
+                    (
+                        template["title"], template["category"], template["age_group"],
+                        template["level"], template["format"], template["coach"],
+                        template["capacity"], template["price"], template["location"],
+                        row["id"],
+                    ),
+                )
+            elif not template and row["template_id"] == "default" and registered == 0:
                 conn.execute("DELETE FROM trainings WHERE id = ?", (row["id"],))
+            # Ручная тренировка администратора здесь намеренно не меняется.
+
         conn.commit()
     except Exception:
         conn.rollback()
@@ -4209,6 +4271,10 @@ def handle_text(
         text,
     )
 
+    global last_active_admin_id
+    if user_id in ADMINS:
+        last_active_admin_id = user_id
+
     if is_user_blocked(user_id):
         send_message(
             user_id,
@@ -4550,7 +4616,7 @@ def handle_text(
             "training_id"
         )
 
-        if text == "✅ Записаться":
+        if text == "✅ Подтвердить запись":
             register_user_for_training(
                 user_id,
                 training_id,
@@ -4616,11 +4682,24 @@ def handle_text(
             )
 
             if registration:
+                details_text = format_training(training)
+                details_text += "\n\n👥 УЧАСТНИКИ\n"
+                try:
+                    participants = list(get_registrations(training_id) or [])
+                except Exception:
+                    participants = []
+                if not participants:
+                    details_text += "Пока никто не записан."
+                else:
+                    for index, participant in enumerate(participants, start=1):
+                        first_name = row_value(participant, "first_name", "") or ""
+                        last_name = row_value(participant, "last_name", "") or ""
+                        name = f"{first_name} {last_name}".strip() or "Участник"
+                        details_text += f"\n{index}. {name}"
+
                 send_message(
                     user_id,
-                    format_training(
-                        training
-                    ),
+                    details_text,
                     {
                         "one_time": False,
                         "buttons": [
@@ -5328,9 +5407,22 @@ def callback():
             or ""
         )
 
+        # VK присылает message_new не только для обычных сообщений,
+        # но и для сервисных событий (например, смена названия чата).
+        # У таких событий text пустой. Их нельзя отправлять в handle_text,
+        # иначе бот воспринимает событие как неизвестную команду и снова
+        # показывает пользователю «Выберите действие».
         if not user_id:
             logger.warning(
                 "No user_id in event"
+            )
+            return "ok", 200
+
+        if not str(text).strip() or message.get("action") or message.get("is_unavailable"):
+            logger.info(
+                "Ignoring VK service/empty message user=%s action=%s",
+                user_id,
+                message.get("action"),
             )
             return "ok", 200
 
@@ -5340,10 +5432,20 @@ def callback():
             text,
         )
 
-        handle_text(
-            int(user_id),
-            str(text),
-        )
+        numeric_user_id = int(user_id)
+        if numeric_user_id in processing_users:
+            set_typing_activity(numeric_user_id)
+            return "ok", 200
+
+        processing_users.add(numeric_user_id)
+        try:
+            set_typing_activity(numeric_user_id)
+            handle_text(
+                numeric_user_id,
+                str(text),
+            )
+        finally:
+            processing_users.discard(numeric_user_id)
 
         return "ok", 200
 
@@ -5367,13 +5469,40 @@ def training_start_datetime(training):
     return datetime.combine(training_date, parsed_time).replace(tzinfo=TIMEZONE)
 
 
+def format_time_until_training(start_dt, now=None):
+    """Возвращает понятное время до начала тренировки по Челябинску."""
+    if now is None:
+        now = datetime.now(TIMEZONE)
+    seconds = max(0, int((start_dt - now).total_seconds()))
+    total_minutes = seconds // 60
+    days, remainder = divmod(total_minutes, 24 * 60)
+    hours, minutes = divmod(remainder, 60)
+
+    parts = []
+    if days:
+        parts.append(f"{days} дн.")
+    if hours:
+        parts.append(f"{hours} ч.")
+    if minutes or not parts:
+        parts.append(f"{minutes} мин.")
+    return " ".join(parts)
+
+
 def notification_text(training, hours_before):
-    if hours_before == 24:
+    now = datetime.now(TIMEZONE)
+    start_dt = training_start_datetime(training)
+    remaining = format_time_until_training(start_dt, now)
+
+    if start_dt - now <= timedelta(hours=24):
+        title = "ТРЕНИРОВКА СКОРО"
+        lead = f"До начала тренировки по Челябинскому времени: {remaining}."
+    elif hours_before == 24:
         title = "ЗАВТРА У ВАС ТРЕНИРОВКА"
         lead = "Напоминаем, что завтра у вас тренировка."
     else:
         title = "ТРЕНИРОВКА ЧЕРЕЗ 2 ЧАСА"
         lead = "Напоминаем, что через 2 часа у вас тренировка."
+
     return (
         f"🏐 {title}\n\n"
         f"{lead}\n\n"
@@ -5488,26 +5617,26 @@ def prepare_admin_minimum_set_notifications(now):
             f"Вместимость: {capacity} мест."
         )
 
-        for admin_id in ADMINS:
-            try:
-                should_send = create_admin_notification_marker(
-                    admin_id,
-                    training_id,
-                    "minimum_set_24h",
-                )
-                if should_send:
-                    result = send_message(admin_id, message, admin_back_keyboard())
-                    if result and result.get("error"):
-                        logger.warning(
-                            "Admin minimum-set notification failed for %s / %s",
-                            admin_id, training_id,
-                        )
-            except Exception:
-                logger.exception(
-                    "Failed to send minimum-set notification for training %s to admin %s",
-                    training_id,
-                    admin_id,
-                )
+        admin_id = last_active_admin_id or min(ADMINS)
+        try:
+            should_send = create_admin_notification_marker(
+                admin_id,
+                training_id,
+                "minimum_set_24h",
+            )
+            if should_send:
+                result = send_message(admin_id, message, admin_back_keyboard())
+                if result and result.get("error"):
+                    logger.warning(
+                        "Admin minimum-set notification failed for %s / %s",
+                        admin_id, training_id,
+                    )
+        except Exception:
+            logger.exception(
+                "Failed to send minimum-set notification for training %s to admin %s",
+                training_id,
+                admin_id,
+            )
 
 
 def process_completion_checks():
@@ -5540,20 +5669,20 @@ def process_completion_checks():
         ]
 
         sent_any = False
-        for admin_id in ADMINS:
-            try:
-                result = send_message(
-                    admin_id,
-                    completion_check_text(training),
-                    {"one_time": False, "buttons": buttons},
-                )
-                if not result or not result.get("error"):
-                    sent_any = True
-            except Exception:
-                logger.exception(
-                    "Failed to send completion check for training %s to admin %s",
-                    training_id, admin_id,
-                )
+        admin_id = last_active_admin_id or min(ADMINS)
+        try:
+            result = send_message(
+                admin_id,
+                completion_check_text(training),
+                {"one_time": False, "buttons": buttons},
+            )
+            if not result or not result.get("error"):
+                sent_any = True
+        except Exception:
+            logger.exception(
+                "Failed to send completion check for training %s to admin %s",
+                training_id, admin_id,
+            )
 
         if sent_any:
             try:
@@ -5594,7 +5723,13 @@ def process_pending_notifications():
             result = send_message(
                 user_id,
                 notification_text(training, hours_before),
-                main_menu(user_id),
+                {
+                    "one_time": False,
+                    "buttons": [
+                        [button("👤 Мои тренировки", "primary")],
+                        [button("📅 Расписание", "secondary")],
+                    ],
+                },
             )
             if result and result.get("error"):
                 mark_notification_failed(notification_id)
